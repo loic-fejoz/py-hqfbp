@@ -1,0 +1,91 @@
+import pytest
+import gzip
+import lzma
+from hqfbp import pack, unpack, merge_headers, get_coap_id
+
+def test_simple_pack_unpack():
+    # Example 1 style
+    src_callsign = "FOSM-1"
+    content = "Autour de la terre, je pense aux élèves scrutant l'horizon.".encode('utf-8')
+    header = {
+        "Message-Id": 1,
+        "Src-Callsign": src_callsign
+    }
+    
+    pdu = pack(header, content)
+    
+    decoded_header, decoded_payload = unpack(pdu)
+    
+    assert decoded_header[0] == 1
+    assert decoded_header[1] == src_callsign
+    assert decoded_payload == content
+
+def test_mandatory_msg_id():
+    with pytest.raises(ValueError, match="Message-Id.*mandatory"):
+        pack({"Src-Callsign": "N0CALL"}, b"data")
+
+def test_chunking_and_merging():
+    # Example 2 style
+    lorem = b"Lorem ipsum dolor sit amet, consectetur adipiscing elit."
+    chunk1_data = lorem[:len(lorem)//2]
+    chunk2_data = lorem[len(lorem)//2:]
+    
+    h1 = {
+        "Message-Id": 1001,
+        "Original-Message-Id": 1001,
+        "Chunk-Id": 0,
+        "Total-Chunks": 2,
+        "File-Size": len(lorem),
+        "Content-Type": "text/plain"
+    }
+    
+    h2 = {
+        "Message-Id": 1002,
+        "Original-Message-Id": 1001,
+        "Chunk-Id": 1,
+        "Total-Chunks": 2,
+        "Repr-Digest": b"somehash"
+    }
+    
+    pdu1 = pack(h1, chunk1_data)
+    pdu2 = pack(h2, chunk2_data)
+    
+    dec_h1, _ = unpack(pdu1)
+    dec_h2, _ = unpack(pdu2)
+    
+    merged = merge_headers([dec_h1, dec_h2])
+    
+    assert merged[4] == "text/plain"  # Content-Type from h1
+    assert merged[6] == b"somehash"   # Repr-Digest from h2
+    assert merged[8] == len(lorem)   # File-Size from h1
+    # Chunking params should be excluded from final merged global header
+    assert 9 not in merged
+    assert 10 not in merged
+
+def test_content_encoding():
+    # Example 3.a/b style
+    content = b"Compressed data"
+    compressed = gzip.compress(content)
+    
+    header = {
+        0: 1,
+        5: "gzip"
+    }
+    
+    pdu = pack(header, compressed)
+    dec_h, dec_p = unpack(pdu)
+    
+    assert dec_h[5] == "gzip"
+    assert gzip.decompress(dec_p) == content
+
+def test_coap_id():
+    assert get_coap_id("image/png") == 23
+    assert get_coap_id("text/plain;charset=utf-8") == 0
+    assert get_coap_id("unknown/type") is None
+
+def test_inconsistent_merge():
+    h1 = {0: 1, 1: "CALL-1", 9: 0}
+    h2 = {0: 2, 1: "CALL-2", 9: 1} # Different SRC
+    
+    with pytest.raises(ValueError, match="Inconsistent"):
+        merge_headers([h1, h2])

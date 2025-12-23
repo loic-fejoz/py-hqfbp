@@ -1,0 +1,16 @@
+[project]
+name = "hqfbp"
+version = "0.1.0"
+description = "Module to handle the HQFBP protocol, aka Hamradio Quick File Broadcasting Protocol"
+readme = "README.md"
+authors = [
+    { name = "Loïc Fejoz", email = "loic@fejoz.net" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "cbor2>=5.7.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
