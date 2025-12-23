@@ -183,3 +183,36 @@ def test_generator_announcement():
     
     assert data_h[HQFBP_CBOR_KEYS['Message-Id']] == 2
     assert gzip.decompress(data_p) == data
+
+def test_generator_parse_encodings():
+    gen = PDUGenerator()
+    
+    # Empty/None input
+    assert gen._parse_encodings(None) == ([], [], False)
+    assert gen._parse_encodings([]) == ([], [], False)
+    
+    # Single encoding (no boundary)
+    assert gen._parse_encodings("gzip") == (["gzip"], [], False)
+    assert gen._parse_encodings(["gzip"]) == (["gzip"], [], False)
+    assert gen._parse_encodings(["gzip", "h"]) == (["gzip"], [], True)
+    
+    # List without boundary
+    assert gen._parse_encodings(["gzip", "crc32"]) == (["gzip", "crc32"], [], False)
+    
+    # Boundary at the very start
+    assert gen._parse_encodings(["h", "crc32"]) == ([], ["crc32"], True)
+    assert gen._parse_encodings([-1, "crc32"]) == ([], ["crc32"], True)
+    
+    # Boundary in the middle
+    assert gen._parse_encodings(["gzip", "h", "crc32"]) == (["gzip"], ["crc32"], True)
+    assert gen._parse_encodings(["gzip", -1, "crc32"]) == (["gzip"], ["crc32"], True)
+    
+    # Boundary at the very end
+    assert gen._parse_encodings(["gzip", "h"]) == (["gzip"], [], True)
+    assert gen._parse_encodings(["gzip", -1]) == (["gzip"], [], True)
+    
+    # Multiple elements after boundary
+    assert gen._parse_encodings(["gzip", "h", "aes", "crc32"]) == (["gzip"], ["aes", "crc32"], True)
+    
+    # Unique value as list then boundary
+    assert gen._parse_encodings([1, "h", 6]) == ([1], [6], True)
