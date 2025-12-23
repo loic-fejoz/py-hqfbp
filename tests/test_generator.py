@@ -3,7 +3,7 @@ import lzma
 import brotli
 import pytest
 from hqfbp.generator import PDUGenerator
-from hqfbp import unpack, HQFBP_CBOR_KEYS
+from hqfbp import unpack, HQFBP_CBOR_KEYS, verify_and_strip_crc
 
 def test_generator_single_pdu():
     gen = PDUGenerator(src_callsign="F4JXQ-1")
@@ -119,3 +119,28 @@ def test_generator_config():
     assert header[HQFBP_CBOR_KEYS['Src-Callsign']] == "N0CALL"
     assert header[HQFBP_CBOR_KEYS['Dst-Callsign']] == "QST"
     assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 1 # ["gzip", "h"] optimized to 1
+
+def test_generator_crc_payload_only():
+    # Pre-boundary CRC (payload only)
+    gen = PDUGenerator(encodings=["crc32"])
+    data = b"payload test"
+    pdus = list(gen.generate(data))
+    
+    _, payload = unpack(pdus[0])
+    # The whole payload should have CRC at the end
+    assert verify_and_strip_crc(payload, "crc32") == data
+
+def test_generator_crc_covering_header():
+    # Post-boundary CRC (covering header + payload)
+    gen = PDUGenerator(encodings=["h", "crc32"])
+    data = b"covered test"
+    pdus = list(gen.generate(data))
+    
+    # The whole PDU should have CRC at the end
+    pdu = pdus[0]
+    pdu_no_crc = verify_and_strip_crc(pdu, "crc32")
+    
+    # Now unpack the PDU without CRC
+    header, payload = unpack(pdu_no_crc)
+    assert payload == data
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [-1, 6] # h, crc32

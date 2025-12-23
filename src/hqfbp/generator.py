@@ -2,7 +2,7 @@ import gzip
 import lzma
 import brotli
 from typing import Dict, Any, Optional, List, Union, Generator, Tuple
-from hqfbp import pack, HQFBP_CBOR_KEYS
+from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32
 
 class PDUGenerator:
     """
@@ -52,6 +52,10 @@ class PDUGenerator:
                 data = brotli.compress(data)
             elif enc in (4, "lzma"):
                 data = lzma.compress(data)
+            elif enc in (5, "crc16"):
+                data += crc16_ccitt(data)
+            elif enc in (6, "crc32"):
+                data += crc32(data)
             # Add other encodings here (deflate, etc.) if needed
         return data
 

@@ -1,6 +1,8 @@
 import io
 import cbor2
-from typing import Any, Dict, Tuple, Optional, Union
+import binascii
+import struct
+from typing import Any, Dict, Tuple, Optional, Union, List
 
 # HQFBP Static Key Mapping as per RFC Section 4
 HQFBP_CBOR_KEYS = {
@@ -243,3 +245,51 @@ def human_readable_json(header: Dict[int, Any]) -> Dict[str, Any]:
         readable["Content-Type"] = content_type_val
         
     return readable
+
+def crc16_ccitt(data: bytes) -> bytes:
+    """
+    Calculate CRC16-CCITT (XMODEM variant, poly 0x1021, init 0xFFFF).
+    Returns 2 bytes in big-endian.
+    """
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= (byte << 8)
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = (crc << 1) ^ 0x1021
+            else:
+                crc = crc << 1
+            crc &= 0xFFFF
+    return struct.pack(">H", crc)
+
+def crc32(data: bytes) -> bytes:
+    """
+    Calculate CRC32.
+    Returns 4 bytes in big-endian.
+    """
+    return struct.pack(">I", binascii.crc32(data) & 0xFFFFFFFF)
+
+def verify_and_strip_crc(data: bytes, algorithm: Union[int, str]) -> bytes:
+    """
+    Verify the CRC at the end of data and return data without CRC.
+    algorithm can be 5/"crc16" or 6/"crc32".
+    Raises ValueError if verification fails.
+    """
+    if algorithm in (5, "crc16"):
+        if len(data) < 2:
+            raise ValueError("Data too short for CRC16")
+        payload = data[:-2]
+        expected = data[-2:]
+        if crc16_ccitt(payload) != expected:
+            raise ValueError("CRC16 verification failed")
+        return payload
+    elif algorithm in (6, "crc32"):
+        if len(data) < 4:
+            raise ValueError("Data too short for CRC32")
+        payload = data[:-4]
+        expected = data[-4:]
+        if crc32(payload) != expected:
+            raise ValueError("CRC32 verification failed")
+        return payload
+    else:
+        raise ValueError(f"Unknown CRC algorithm: {algorithm}")

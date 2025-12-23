@@ -170,3 +170,21 @@ def test_pack_trailing_h():
     p4 = pack({HQFBP_CBOR_KEYS['Message-Id']: 4, "Content-Encoding": ["gzip", "h", "h"]}, b"data")
     h4, _ = unpack(p4)
     assert h4[HQFBP_CBOR_KEYS['Content-Encoding']] == 1
+
+def test_crc_helpers():
+    from hqfbp import crc16_ccitt, crc32, verify_and_strip_crc
+    data = b"hello"
+    
+    # Test CRC16
+    c16 = crc16_ccitt(data)
+    assert len(c16) == 2
+    assert verify_and_strip_crc(data + c16, "crc16") == data
+    with pytest.raises(ValueError, match="verification failed"):
+        verify_and_strip_crc(data + b"\x00\x00", "crc16")
+        
+    # Test CRC32
+    c32 = crc32(data)
+    assert len(c32) == 4
+    assert verify_and_strip_crc(data + c32, "crc32") == data
+    with pytest.raises(ValueError, match="verification failed"):
+        verify_and_strip_crc(data + b"\x00\x00\x00\x00", "crc32")
