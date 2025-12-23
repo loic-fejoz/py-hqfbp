@@ -1,6 +1,7 @@
 import gzip
 import lzma
 import brotli
+import cbor2
 from typing import Dict, Any, Optional, List, Union, Generator, Tuple
 from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32
 
@@ -15,12 +16,14 @@ class PDUGenerator:
         src_callsign: Optional[str] = None,
         dst_callsign: Optional[str] = None,
         max_payload_size: Optional[int] = None,
-        encodings: Optional[Union[str, List[Union[str, int]]]] = None
+        encodings: Optional[Union[str, List[Union[str, int]]]] = None,
+        announcement_encodings: Optional[Union[str, List[Union[str, int]]]] = None
     ):
         self.src_callsign = src_callsign
         self.dst_callsign = dst_callsign
         self.max_payload_size = max_payload_size
         self.encodings = encodings
+        self.announcement_encodings = announcement_encodings
         self._next_msg_id = 1
 
     def set_callsigns(self, src: Optional[str] = None, dst: Optional[str] = None):
@@ -59,28 +62,24 @@ class PDUGenerator:
             # Add other encodings here (deflate, etc.) if needed
         return data
 
+    def _parse_encodings(self, val: Optional[Union[str, List[Union[str, int]]]]) -> Tuple[List[Union[str, int]], List[Union[str, int]], bool]:
+        if not val:
+            return [], [], False
+        encs = val if isinstance(val, list) else [val]
+        for i, e in enumerate(encs):
+            if e in (-1, "h"):
+                return encs[:i], encs[i+1:], True
+        return encs, [], False
+
     def _split_encodings(self) -> Tuple[List[Union[str, int]], List[Union[str, int]]]:
         """Split encodings into pre-boundary and post-boundary."""
-        if not self.encodings:
-            return [], []
-        
-        encs = self.encodings if isinstance(self.encodings, list) else [self.encodings]
-        
-        try:
-            # -1 or "h" is the boundary
-            idx = -1
-            for i, e in enumerate(encs):
-                if e == -1 or e == "h":
-                    idx = i
-                    break
-            
-            if idx == -1:
-                # No boundary, all are pre-boundary
-                return encs, []
-            else:
-                return encs[:idx], encs[idx+1:]
-        except (ValueError, TypeError):
-            return encs, []
+        pre, post, _ = self._parse_encodings(self.encodings)
+        return pre, post
+
+    def _split_announcement_encodings(self) -> List[Union[str, int]]:
+        """Return the post-boundary encodings for the announcement PDU."""
+        pre, post, found = self._parse_encodings(self.announcement_encodings)
+        return post if found else pre
 
     def generate(self, data: bytes, content_type: Optional[str] = None) -> Generator[bytes, None, None]:
         """
@@ -89,6 +88,8 @@ class PDUGenerator:
         Applies pre-boundary encodings (e.g. compression) to the entire data first.
         Then chunks the result if max_payload_size is set.
         Finally applies post-boundary encodings to each packed PDU.
+        
+        If announcement_encodings is set, yields a preliminary announcement frame.
         """
         file_size = len(data)
         pre_enc, post_enc = self._split_encodings()
@@ -97,6 +98,37 @@ class PDUGenerator:
         encoded_data = self._apply_encodings(data, pre_enc)
         encoded_size = len(encoded_data)
         
+        # Determine the first data message ID
+        # We need it if we have an announcement
+        if self.announcement_encodings:
+            # The announcement itself will consume one ID
+            ann_msg_id = self._get_next_msg_id()
+            upcoming_msg_id = self._next_msg_id
+            
+            # 1. Prepare Announcement Payload (CBOR map)
+            ann_payload_dict = {
+                HQFBP_CBOR_KEYS['Message-Id']: upcoming_msg_id,
+            }
+            if self.encodings:
+                ann_payload_dict[HQFBP_CBOR_KEYS['Content-Encoding']] = self.encodings
+            
+            ann_payload_bytes = pack(ann_payload_dict, b"")
+            
+            # 2. Prepare Announcement Header
+            ann_header = {
+                HQFBP_CBOR_KEYS['Message-Id']: ann_msg_id,
+                HQFBP_CBOR_KEYS['Content-Type']: "application/vnd.hqfbp+cbor",
+            }
+            if self.src_callsign:
+                ann_header[HQFBP_CBOR_KEYS['Src-Callsign']] = self.src_callsign
+            if self.dst_callsign:
+                ann_header[HQFBP_CBOR_KEYS['Dst-Callsign']] = self.dst_callsign
+            
+            # 3. Pack and Encode Announcement PDU
+            ann_pdu = pack(ann_header, ann_payload_bytes)
+            ann_post_enc = self._split_announcement_encodings()
+            yield self._apply_encodings(ann_pdu, ann_post_enc)
+
         # Determine if we need to chunk
         if self.max_payload_size and encoded_size > self.max_payload_size:
             # Chunked transmission

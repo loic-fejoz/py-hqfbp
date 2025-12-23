@@ -144,3 +144,42 @@ def test_generator_crc_covering_header():
     header, payload = unpack(pdu_no_crc)
     assert payload == data
     assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [-1, 6] # h, crc32
+
+def test_generator_announcement():
+    data = b"Some data"
+    # encodings: gzip payload, then crc32 the whole message
+    # announcement: crc16 the announcement pdu
+    gen = PDUGenerator(
+        src_callsign="F4JXQ",
+        encodings=["gzip", "h", "crc32"],
+        announcement_encodings=["crc16"]
+    )
+    
+    pdus = list(gen.generate(data))
+    
+    # We expect 2 PDUs: Announcement + One Data PDU
+    assert len(pdus) == 2
+    
+    # 1. Verify Announcement PDU
+    ann_pdu = pdus[0]
+    # It should have CRC16 at the end (post-boundary for announcement)
+    from hqfbp import verify_and_strip_crc
+    ann_pdu_no_crc = verify_and_strip_crc(ann_pdu, "crc16")
+    
+    ann_h, ann_p_bytes = unpack(ann_pdu_no_crc)
+    assert ann_h[HQFBP_CBOR_KEYS['Content-Type']] == "application/vnd.hqfbp+cbor"
+    
+    # Decode announcement payload
+    import cbor2
+    ann_p = cbor2.loads(ann_p_bytes)
+    # It should announce the next message ID and its encodings
+    assert ann_p[HQFBP_CBOR_KEYS['Message-Id']] == 2 # Announcement is 1, data is 2
+    assert ann_p[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1, 6]
+    
+    # 2. Verify Data PDU
+    data_pdu = pdus[1]
+    data_pdu_no_crc = verify_and_strip_crc(data_pdu, "crc32")
+    data_h, data_p = unpack(data_pdu_no_crc)
+    
+    assert data_h[HQFBP_CBOR_KEYS['Message-Id']] == 2
+    assert gzip.decompress(data_p) == data
