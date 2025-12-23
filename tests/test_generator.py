@@ -1,4 +1,6 @@
 import gzip
+import lzma
+import brotli
 import pytest
 from hqfbp.generator import PDUGenerator
 from hqfbp import unpack, HQFBP_CBOR_KEYS
@@ -34,6 +36,31 @@ def test_generator_single_gzip_pdu():
     assert header[HQFBP_CBOR_KEYS['Src-Callsign']] == "F4JXQ-1"
     # The payload should be gzipped
     assert payload == gzip.compress(data)
+
+
+def test_generator_single_lzma_pdu():
+    gen = PDUGenerator(src_callsign="F4JXQ-1", encodings=["lzma"])
+    data = b"Hello World with enough data to be worth lzma compressing" * 10
+    
+    pdus = list(gen.generate(data))
+    
+    assert len(pdus) == 1
+    header, payload = unpack(pdus[0])
+    
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 4 # lzma
+    assert payload == lzma.compress(data)
+
+def test_generator_single_brotli_pdu():
+    gen = PDUGenerator(src_callsign="F4JXQ-1", encodings=["br"])
+    data = b"Hello World with enough data to be worth brotli compressing" * 10
+    
+    pdus = list(gen.generate(data))
+    
+    assert len(pdus) == 1
+    header, payload = unpack(pdus[0])
+    
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 3 # br
+    assert payload == brotli.compress(data)
 
 def test_generator_gzip_before_chunking():
     # Test that compression happens BEFORE chunking

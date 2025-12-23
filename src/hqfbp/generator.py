@@ -1,5 +1,6 @@
 import gzip
 import lzma
+import brotli
 from typing import Dict, Any, Optional, List, Union, Generator, Tuple
 from hqfbp import pack, HQFBP_CBOR_KEYS
 
@@ -47,9 +48,11 @@ class PDUGenerator:
         for enc in encodings:
             if enc in (1, "gzip"):
                 data = gzip.compress(data)
+            elif enc in (3, "br"):
+                data = brotli.compress(data)
             elif enc in (4, "lzma"):
                 data = lzma.compress(data)
-            # Add other encodings here (deflate, br, etc.) if needed
+            # Add other encodings here (deflate, etc.) if needed
         return data
 
     def _split_encodings(self) -> Tuple[List[Union[str, int]], List[Union[str, int]]]:
