@@ -89,3 +89,36 @@ def test_inconsistent_merge():
     
     with pytest.raises(ValueError, match="Inconsistent"):
         merge_headers([h1, h2])
+
+def test_human_readable_json():
+    from hqfbp import human_readable_json
+    
+    header = {
+        0: 1001,
+        1: "FOSM-1",
+        3: 23, # image/png
+        5: [1, -1, "rs(255,233)"], # gzip, boundary, custom string
+        8: 4032
+    }
+    
+    readable = human_readable_json(header)
+    
+    assert readable["Message-Id"] == 1001
+    assert readable["Src-Callsign"] == "FOSM-1"
+    assert readable["Content-Type"] == "image/png"
+    assert "Content-Format" not in readable
+    assert readable["Content-Encoding"] == ["gzip", "h", "rs(255,233)"]
+    assert readable["File-Size"] == 4032
+
+def test_human_readable_json_content_type():
+    from hqfbp import human_readable_json
+    # Test that Content-Type (4) is also handled if present
+    h1 = {0: 1, 4: "text/markdown"}
+    r1 = human_readable_json(h1)
+    assert r1["Content-Type"] == "text/markdown"
+    
+    # Test precedence or merge (Content-Format 3 should probably win or handle both)
+    # In my implementation, I check 3 and if it exists it replaces current content_type_val
+    h2 = {0: 1, 3: 50} # application/json
+    r2 = human_readable_json(h2)
+    assert r2["Content-Type"] == "application/json"

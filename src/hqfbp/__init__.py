@@ -62,6 +62,24 @@ COAP_CONTENT_FORMATS = {
     "application/or-tecap": 116, # SenML Etch
 }
 
+# Inverse mapping for human_readable_json
+_REV_COAP_CONTENT_FORMATS = {v: k for k, v in COAP_CONTENT_FORMATS.items()}
+
+# Well-Known Encoding Registry (RFC 6.1.1)
+ENCODING_REGISTRY = {
+    -1: "h", # Boundary
+    0: "identity",
+    1: "gzip",
+    2: "deflate",
+    3: "br",
+    4: "lzma",
+    5: "crc16",
+    6: "crc32",
+}
+
+# Inverse mapping for encoding lookup
+_REV_ENCODING_REGISTRY = {v: k for k, v in ENCODING_REGISTRY.items()}
+
 def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
     """
     Pack an HQFBP PDU.
@@ -146,3 +164,43 @@ def merge_headers(headers: list[Dict[int, Any]]) -> Dict[int, Any]:
         merged.pop(k, None)
 
     return merged
+
+def human_readable_json(header: Dict[int, Any]) -> Dict[str, Any]:
+    """
+    Convert integer encoded values/keys back to textual ones for human readability.
+    
+    - Converts integer keys back to field names.
+    - Converts Content-Format (3) back to Content-Type (4) textual value.
+    - Converts integer Encodings (5) back to string names.
+    """
+    readable = {}
+    
+    # Track if we found a Content-Format to merge it into Content-Type
+    content_type_val = header.get(4) # Content-Type
+    content_format_val = header.get(3) # Content-Format
+    
+    if content_format_val is not None:
+        content_type_val = _REV_COAP_CONTENT_FORMATS.get(content_format_val, f"unknown/coap-{content_format_val}")
+
+    for k, v in header.items():
+        if k == 3: # Skip Content-Format, handled above
+            continue
+        if k == 4: # Skip Content-Type, handled above
+            continue
+            
+        key_name = _REV_KEYS.get(k, str(k))
+        
+        if k == 5: # Content-Encoding
+            if isinstance(v, list):
+                readable[key_name] = [ENCODING_REGISTRY.get(i, str(i)) if isinstance(i, int) else i for i in v]
+            elif isinstance(v, int):
+                readable[key_name] = ENCODING_REGISTRY.get(v, str(v))
+            else:
+                readable[key_name] = v
+        else:
+            readable[key_name] = v
+            
+    if content_type_val is not None:
+        readable["Content-Type"] = content_type_val
+        
+    return readable
