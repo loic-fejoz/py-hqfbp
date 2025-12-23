@@ -82,7 +82,8 @@ _REV_ENCODING_REGISTRY = {v: k for k, v in ENCODING_REGISTRY.items()}
 
 def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
     """
-    Pack an HQFBP PDU.
+    Pack an HQFBP PDU. Supports human-readable keys and values,
+    optimizing for minimal byte size.
     
     Args:
         header: Dictionary containing metadata. Keys can be integers or field names.
@@ -92,6 +93,8 @@ def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
         bytes: Encapsulated HQFBP PDU (CBOR header + payload).
     """
     cbor_header = {}
+    
+    # 1. Map string keys to integer IDs and copy values
     for k, v in header.items():
         if isinstance(k, str):
             key_id = HQFBP_CBOR_KEYS.get(k)
@@ -103,6 +106,42 @@ def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
         else:
             cbor_header[k] = v
             
+    # 2. Optimize Content-Type (4) to Content-Format (3) if possible
+    ct = cbor_header.get(4)
+    if isinstance(ct, str):
+        coap_id = get_coap_id(ct)
+        if coap_id is not None:
+            cbor_header[3] = coap_id
+            del cbor_header[4]
+            
+    # 3. Omit default Content-Format (0) or Content-Type (text/plain;charset=utf-8)
+    if cbor_header.get(3) == 0:
+        del cbor_header[3]
+        
+    # 4. Optimize Content-Encoding (5) from strings to integers
+    ce = cbor_header.get(5)
+    if ce is not None:
+        if isinstance(ce, list):
+            ce = [_REV_ENCODING_REGISTRY.get(i, i) if isinstance(i, str) else i for i in ce]
+            # Strip trailing boundary marker (-1 / "h") as per user request
+            while ce and ce[-1] == -1:
+                ce.pop()
+            
+            if not ce:
+                del cbor_header[5]
+            elif len(ce) == 1:
+                cbor_header[5] = ce[0]
+            else:
+                cbor_header[5] = ce
+        elif isinstance(ce, str):
+            val = _REV_ENCODING_REGISTRY.get(ce, ce)
+            if val == -1: # "h" alone is redundant
+                del cbor_header[5]
+            else:
+                cbor_header[5] = val
+        elif ce == -1: # redundant
+            del cbor_header[5]
+
     # Ensure Message-Id is present as per RFC (MANDATORY)
     if 0 not in cbor_header:
         raise ValueError("Message-Id (key 0) is mandatory in HQFBP header")

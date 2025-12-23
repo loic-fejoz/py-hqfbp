@@ -75,7 +75,7 @@ def test_content_encoding():
     pdu = pack(header, compressed)
     dec_h, dec_p = unpack(pdu)
     
-    assert dec_h[5] == "gzip"
+    assert dec_h[5] == 1 # Optimized from "gzip"
     assert gzip.decompress(dec_p) == content
 
 def test_coap_id():
@@ -122,3 +122,51 @@ def test_human_readable_json_content_type():
     h2 = {0: 1, 3: 50} # application/json
     r2 = human_readable_json(h2)
     assert r2["Content-Type"] == "application/json"
+
+def test_pack_optimization():
+    from hqfbp import pack, unpack
+    
+    # Test 1: Content-Type string to CoAP ID (png -> 23)
+    p1 = pack({0: 1, "Content-Type": "image/png"}, b"pngdata")
+    h1, _ = unpack(p1)
+    assert 4 not in h1
+    assert h1[3] == 23
+    
+    # Test 2: Content-Encoding strings to IDs (strips trailing 'h')
+    p2 = pack({0: 2, "Content-Encoding": ["gzip", "h"]}, b"gzdata")
+    h2, _ = unpack(p2)
+    assert h2[5] == 1
+    
+    # Test 3: Omit default Content-Format 0 / text/plain
+    p3 = pack({0: 3, "Content-Type": "text/plain;charset=utf-8"}, b"text")
+    h3, _ = unpack(p3)
+    assert 3 not in h3
+    assert 4 not in h3
+    
+    # Test 4: Single string encoding
+    p4 = pack({0: 4, "Content-Encoding": "lzma"}, b"lzmadata")
+    h4, _ = unpack(p4)
+    assert h4[5] == 4
+
+def test_pack_trailing_h():
+    from hqfbp import pack, unpack
+    
+    # Test case 1: ["gzip", "h"] -> should be 1
+    p1 = pack({0: 1, "Content-Encoding": ["gzip", "h"]}, b"data")
+    h1, _ = unpack(p1)
+    assert h1[5] == 1
+    
+    # Test case 2: ["h"] -> should be removed
+    p2 = pack({0: 2, "Content-Encoding": ["h"]}, b"data")
+    h2, _ = unpack(p2)
+    assert 5 not in h2
+    
+    # Test case 3: ["gzip", "h", "crc32"] -> should remain [1, -1, 6]
+    p3 = pack({0: 3, "Content-Encoding": ["gzip", "h", "crc32"]}, b"data")
+    h3, _ = unpack(p3)
+    assert h3[5] == [1, -1, 6]
+    
+    # Test case 4: multiple trailing h -> strip all
+    p4 = pack({0: 4, "Content-Encoding": ["gzip", "h", "h"]}, b"data")
+    h4, _ = unpack(p4)
+    assert h4[5] == 1
