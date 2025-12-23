@@ -21,18 +21,38 @@ def test_generator_single_pdu():
     assert HQFBP_CBOR_KEYS['Content-Encoding'] not in header
     assert payload == data
 
-# def test_generator_single_gzip_pdu():
-#     gen = PDUGenerator(src_callsign="F4JXQ-1", encodings=["gzip"])
-#     data = b"Hello World"
+def test_generator_single_gzip_pdu():
+    gen = PDUGenerator(src_callsign="F4JXQ-1", encodings=["gzip"])
+    data = b"Hello World"
     
-#     pdus = list(gen.generate(data, content_type="text/plain;charset=utf-8"))
+    pdus = list(gen.generate(data, content_type="text/plain;charset=utf-8"))
     
-#     assert len(pdus) == 1
-#     header, payload = unpack(pdus[0])
+    assert len(pdus) == 1
+    header, payload = unpack(pdus[0])
     
-#     assert header[HQFBP_CBOR_KEYS['Message-Id']] == 1
-#     assert header[HQFBP_CBOR_KEYS['Src-Callsign']] == "F4JXQ-1"
-#     assert payload == gzip.compress(data)
+    assert header[HQFBP_CBOR_KEYS['Message-Id']] == 1
+    assert header[HQFBP_CBOR_KEYS['Src-Callsign']] == "F4JXQ-1"
+    # The payload should be gzipped
+    assert payload == gzip.compress(data)
+
+def test_generator_gzip_before_chunking():
+    # Test that compression happens BEFORE chunking
+    # Original data 100 bytes, max_payload 50.
+    # If we compress first, it might fit in 1 chunk if it compresses well.
+    # If we chunk first, it would be 2 chunks.
+    data = b"A" * 100
+    compressed_data = gzip.compress(data)
+    # len(compressed_data) is much less than 100, likely around 20-30 bytes.
+    
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=["gzip"], max_payload_size=50)
+    pdus = list(gen.generate(data))
+    
+    # It should compress to < 50 bytes and thus yield ONLY 1 chunk (if it's not chunked by original size)
+    # Wait, my implementation chunks the ENCODED data.
+    assert len(pdus) == 1
+    header, payload = unpack(pdus[0])
+    assert payload == compressed_data
+    assert header[HQFBP_CBOR_KEYS['File-Size']] == 100 # Original size
 
 def test_generator_chunking():
     gen = PDUGenerator(src_callsign="F4JXQ", max_payload_size=10)

@@ -1,9 +1,12 @@
-from typing import Dict, Any, Optional, List, Union, Generator
+import gzip
+import lzma
+from typing import Dict, Any, Optional, List, Union, Generator, Tuple
 from hqfbp import pack, HQFBP_CBOR_KEYS
 
 class PDUGenerator:
     """
     Helper class to generate HQFBP PDUs, supporting common fields and automatic chunking.
+    Supports data compression (gzip, lzma) and pre/post boundary encodings.
     """
     
     def __init__(
@@ -39,25 +42,64 @@ class PDUGenerator:
         self._next_msg_id += 1
         return msg_id
 
+    def _apply_encodings(self, data: bytes, encodings: List[Union[str, int]]) -> bytes:
+        """Apply a list of encodings to the data."""
+        for enc in encodings:
+            if enc in (1, "gzip"):
+                data = gzip.compress(data)
+            elif enc in (4, "lzma"):
+                data = lzma.compress(data)
+            # Add other encodings here (deflate, br, etc.) if needed
+        return data
+
+    def _split_encodings(self) -> Tuple[List[Union[str, int]], List[Union[str, int]]]:
+        """Split encodings into pre-boundary and post-boundary."""
+        if not self.encodings:
+            return [], []
+        
+        encs = self.encodings if isinstance(self.encodings, list) else [self.encodings]
+        
+        try:
+            # -1 or "h" is the boundary
+            idx = -1
+            for i, e in enumerate(encs):
+                if e == -1 or e == "h":
+                    idx = i
+                    break
+            
+            if idx == -1:
+                # No boundary, all are pre-boundary
+                return encs, []
+            else:
+                return encs[:idx], encs[idx+1:]
+        except (ValueError, TypeError):
+            return encs, []
+
     def generate(self, data: bytes, content_type: Optional[str] = None) -> Generator[bytes, None, None]:
         """
         Generate HQFBP PDUs for the given data.
         
-        If max_payload_size is set and data exceeds it, yields multiple chunks.
-        Otherwise, yields a single PDU.
+        Applies pre-boundary encodings (e.g. compression) to the entire data first.
+        Then chunks the result if max_payload_size is set.
+        Finally applies post-boundary encodings to each packed PDU.
         """
         file_size = len(data)
+        pre_enc, post_enc = self._split_encodings()
+        
+        # Apply pre-boundary encodings (e.g. compression)
+        encoded_data = self._apply_encodings(data, pre_enc)
+        encoded_size = len(encoded_data)
         
         # Determine if we need to chunk
-        if self.max_payload_size and file_size > self.max_payload_size:
+        if self.max_payload_size and encoded_size > self.max_payload_size:
             # Chunked transmission
-            total_chunks = (file_size + self.max_payload_size - 1) // self.max_payload_size
+            total_chunks = (encoded_size + self.max_payload_size - 1) // self.max_payload_size
             original_msg_id = self._get_next_msg_id()
             
             for i in range(total_chunks):
                 start = i * self.max_payload_size
-                end = min(start + self.max_payload_size, file_size)
-                chunk_payload = data[start:end]
+                end = min(start + self.max_payload_size, encoded_size)
+                chunk_payload = encoded_data[start:end]
                 
                 header = {
                     HQFBP_CBOR_KEYS['Message-Id']: self._get_next_msg_id() if i > 0 else original_msg_id,
@@ -76,11 +118,14 @@ class PDUGenerator:
                 if content_type and i == 0: # Content-Type usually in the first chunk
                     header[HQFBP_CBOR_KEYS['Content-Type']] = content_type
                 
-                yield pack(header, chunk_payload)
+                pdu = pack(header, chunk_payload)
+                # Apply post-boundary encodings (e.g. FEC) to the whole PDU
+                yield self._apply_encodings(pdu, post_enc)
         else:
             # Single PDU
             header = {
                 HQFBP_CBOR_KEYS['Message-Id']: self._get_next_msg_id(),
+                HQFBP_CBOR_KEYS['File-Size']: file_size,
             }
             if self.src_callsign:
                 header[HQFBP_CBOR_KEYS['Src-Callsign']] = self.src_callsign
@@ -91,4 +136,6 @@ class PDUGenerator:
             if content_type:
                 header[HQFBP_CBOR_KEYS['Content-Type']] = content_type
             
-            yield pack(header, data)
+            pdu = pack(header, encoded_data)
+            # Apply post-boundary encodings to the whole PDU
+            yield self._apply_encodings(pdu, post_enc)
