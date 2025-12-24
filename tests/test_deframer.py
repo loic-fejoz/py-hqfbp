@@ -276,8 +276,17 @@ def test_deframer_rs_post_boundary():
     
     pdus = list(gen.generate(data))
     
-    deframer.receive_bytes(pdus[0]) # Announcement
-    deframer.receive_bytes(pdus[1]) # Data PDU (RS encoded)
+    announcement_pdu = pdus[0]
+    data_pdu = bytearray(pdus[1])
+    
+    # Intentionally corrupt the data PDU
+    # RS(255, 233) can correct (255-233)/2 = 11 errors.
+    # Let's corrupt 5 bytes.
+    for i in range(5):
+        data_pdu[i + 10] ^= 0xFF
+    
+    deframer.receive_bytes(announcement_pdu) # Announcement
+    deframer.receive_bytes(bytes(data_pdu)) # Corrupted Data PDU (RS encoded)
     
     found = False
     while True:
