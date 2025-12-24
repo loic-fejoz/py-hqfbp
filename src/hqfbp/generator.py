@@ -3,7 +3,7 @@ import lzma
 import brotli
 import cbor2
 from typing import Dict, Any, Optional, List, Union, Generator, Tuple
-from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode
+from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode
 import re
 
 CHUNK_RE = re.compile(r"chunk\((\d+)\)")
@@ -77,6 +77,11 @@ class PDUGenerator:
                 if m:
                     n, k = map(int, m.groups())
                     data = rs_encode(data, n, k)
+                else:
+                    m = RQ_RE.match(enc)
+                    if m:
+                        mtu, repair_count = map(int, m.groups())
+                        data = rq_encode(data, mtu, repair_count)
             # Add other encodings here (deflate, etc.) if needed
         return data
 

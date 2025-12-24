@@ -310,3 +310,31 @@ def test_generator_chunk_position():
     assert p1 != p2
 
 
+def test_generator_rq_encoding():
+    # RaptorQ as pre-boundary encoding
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=["rq(10, 2)"])
+    data = b"RaptorQ pre-boundary test"
+    pdus = list(gen.generate(data))
+    
+    assert len(pdus) == 1
+    header, payload = unpack(pdus[0])
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == "rq(10, 2)"
+    
+    from hqfbp import rq_decode
+    assert rq_decode(payload, 10, 2) == data
+
+def test_generator_rq_post_boundary():
+    # RaptorQ as post-boundary encoding
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=["h", "rq(20, 5)"])
+    data = b"RaptorQ post-boundary test data"
+    pdus = list(gen.generate(data))
+    
+    assert len(pdus) == 1
+    pdu = pdus[0]
+    
+    from hqfbp import rq_decode
+    pdu_decompressed = rq_decode(pdu, 20, 5)
+    header, payload = unpack(pdu_decompressed)
+    
+    assert payload == data
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [-1, "rq(20, 5)"]

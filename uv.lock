@@ -80,6 +80,7 @@ source = { editable = "." }
 dependencies = [
     { name = "brotli" },
     { name = "cbor2" },
+    { name = "raptorq" },
     { name = "reedsolo" },
 ]
 
@@ -87,7 +88,17 @@ dependencies = [
 requires-dist = [
     { name = "brotli", specifier = ">=1.2.0" },
     { name = "cbor2", specifier = ">=5.7.1" },
+    { name = "raptorq", specifier = ">=0.1.0" },
     { name = "reedsolo", specifier = ">=1.7.0" },
+]
+
+[[package]]
+name = "raptorq"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/5e/09c4d73b65c34868d24f02ddabcf4f13618982b00bcb12bc8da42e90ffeb/raptorq-2.0.0.tar.gz", hash = "sha256:89cc189525973bc4ff6495b4c3d28f0c1fd629b5c11dec4d3f21883ac8e011d3", size = 87500, upload-time = "2024-03-16T00:58:28.787Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/06/f4/85d0e976816b9e2aac6f35552690801e848a232453adb64d517c35169adb/raptorq-2.0.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a7cc9ffb024969b3cb33ae4f3789431fae0e225b19ae8bad85bb67703e564532", size = 374706, upload-time = "2024-03-16T00:58:26.626Z" },
 ]
 
 [[package]]

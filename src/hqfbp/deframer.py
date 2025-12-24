@@ -13,7 +13,9 @@ from hqfbp import (
     ENCODING_REGISTRY,
     COAP_CONTENT_FORMATS,
     RS_RE,
-    rs_decode
+    rs_decode,
+    RQ_RE,
+    rq_decode
 )
 import re
 
@@ -63,7 +65,7 @@ class Deframer:
         src_callsign = None
         msg_id = None
 
-        if header_unpacked_directly:
+        if header_unpacked_directly and isinstance(peek_header, dict):
             src_callsign = peek_header.get(HQFBP_CBOR_KEYS["Src-Callsign"])
             msg_id = peek_header.get(HQFBP_CBOR_KEYS["Message-Id"])
             if msg_id is not None:
@@ -202,6 +204,11 @@ class Deframer:
                 if m:
                     n, k = map(int, m.groups())
                     data = rs_decode(data, n, k)
+                else:
+                    m = RQ_RE.match(enc)
+                    if m:
+                        mtu, repair_count = map(int, m.groups())
+                        data = rq_decode(data, mtu, repair_count)
         return data
 
 
@@ -249,5 +256,10 @@ class Deframer:
                 if m:
                     n, k = map(int, m.groups())
                     data = rs_decode(data, n, k)
+                else:
+                    m = RQ_RE.match(enc)
+                    if m:
+                        mtu, repair_count = map(int, m.groups())
+                        data = rq_decode(data, mtu, repair_count)
             # identity or unknown just pass through
         return data
