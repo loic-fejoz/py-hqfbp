@@ -149,3 +149,64 @@ def test_pre_encodings(encoding):
             assert ev.payload == data
             found = True
     assert found
+
+def test_deframer_heuristic_gzip_header():
+    deframer = Deframer()
+    data = b"Heuristic data with gzipped header"
+    
+    # Use gzip as post-boundary encoding. 
+    # This will compress the whole PDU (Header + Payload).
+    # Initial unpack will fail because it's not valid CBOR anymore.
+    gen = PDUGenerator(
+        src_callsign="HEURISTIC-1",
+        encodings=["h", "gzip"],
+        announcement_encodings=["identity"]
+    )
+    
+    pdus = list(gen.generate(data))
+    
+    # 1. Process announcement. This tells the deframer that 
+    # upcoming msg will use ["h", "gzip"].
+    deframer.receive_bytes(pdus[0])
+    
+    # 2. Process data PDU. 
+    # deframer.receive_bytes(pdus[1])
+    # The first 'unpack' in receive_bytes will fail.
+    # The heuristic should kick in and try 'gzip' decompression.
+    deframer.receive_bytes(pdus[1])
+    
+    found_msg = False
+    while True:
+        ev = deframer.next_event()
+        if ev is None: break
+        if isinstance(ev, MessageEvent):
+            assert ev.payload == data
+            found_msg = True
+    
+    assert found_msg
+
+def test_deframer_heuristic_multi_encodings():
+    deframer = Deframer()
+    data = b"Multi-layer heuristic test"
+    
+    # Complex post-boundary: first gzip everything, then add a CRC32
+    gen = PDUGenerator(
+        src_callsign="HEURISTIC-2",
+        encodings=["h", "gzip", "crc32"],
+        announcement_encodings=["identity"]
+    )
+    
+    pdus = list(gen.generate(data))
+    
+    deframer.receive_bytes(pdus[0]) # Announcement
+    deframer.receive_bytes(pdus[1]) # Data PDU (scrambled)
+    
+    found_msg = False
+    while True:
+        ev = deframer.next_event()
+        if ev is None: break
+        if isinstance(ev, MessageEvent):
+            assert ev.payload == data
+            found_msg = True
+    
+    assert found_msg

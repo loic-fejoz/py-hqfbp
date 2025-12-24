@@ -45,40 +45,60 @@ class Deframer:
 
     def receive_bytes(self, data: bytes):
         """Accept raw PDU bytes and process them into events."""
-        # 1. Handle Post-boundary Encodings (Strip CRC, etc.) 
-        # Since we might not have the header yet, we check announcements first.
-        # This assumes we are in a stream and might know the sender/msg_id from context
-        # but HQFBP is asynchronous. However, post-boundary encodings are 
-        # applied to the PACKED PDU.
-        
-        # We need to peek into the header to get src/msg_id to look up announcements
+        # 1. Try to peek into the header to get src/msg_id
         try:
-            temp_header, _ = unpack(data)
+            peek_header, _ = unpack(data)
+            header_unpacked_directly = True
         except Exception:
+            header_unpacked_directly = False
+
+        header = None
+        payload = None
+        encodings = None
+        src_callsign = None
+        msg_id = None
+
+        if header_unpacked_directly:
+            src_callsign = peek_header.get(HQFBP_CBOR_KEYS["Src-Callsign"])
+            msg_id = peek_header.get(HQFBP_CBOR_KEYS["Message-Id"])
+            if msg_id is not None:
+                encodings = self._announcements.get((src_callsign, msg_id))
+                if encodings:
+                    # Strip based on announcement info
+                    try:
+                        data = self._strip_post_boundary_encodings(data, encodings)
+                        header, payload = unpack(data)
+                    except Exception:
+                        return # Inconsistent
+                else:
+                    # Strip based on header info if present
+                    encodings = peek_header.get(HQFBP_CBOR_KEYS["Content-Encoding"])
+                    header, payload = peek_header, _
+                    if encodings:
+                        payload = self._strip_post_boundary_encodings(payload, encodings)
+        else:
+            # 2. Heuristic: Try unique sequences from announcements
+            # We must try the sequences as they were stored (could be [h, gzip] or [gzip])
+            sequences = list(set(tuple(e) if isinstance(e, list) else (e,) 
+                                for e in self._announcements.values() if e is not None))
+            
+            for seq_tuple in sequences:
+                seq = list(seq_tuple)
+                try:
+                    # We try to treat seq as a Content-Encoding list and strip post-boundary
+                    stripped_data = self._strip_post_boundary_encodings(data, seq)
+                    header, payload = unpack(stripped_data)
+                    src_callsign = header.get(HQFBP_CBOR_KEYS["Src-Callsign"])
+                    msg_id = header.get(HQFBP_CBOR_KEYS["Message-Id"])
+                    if msg_id is not None:
+                        data = stripped_data
+                        encodings = seq
+                        break
+                except Exception:
+                    continue
+
+        if header is None or msg_id is None:
             return
-
-        src_callsign = temp_header.get(HQFBP_CBOR_KEYS["Src-Callsign"])
-        msg_id = temp_header.get(HQFBP_CBOR_KEYS["Message-Id"])
-        if msg_id is None:
-            return
-
-        encodings = self._announcements.get((src_callsign, msg_id))
-        
-        # If we have an announcement, the encodings apply to the whole PDU
-        if encodings:
-            data = self._strip_post_boundary_encodings(data, encodings)
-
-        # 2. Unpack the (potentially stripped) PDU
-        try:
-            header, payload = unpack(data)
-        except Exception:
-            return
-
-        # 3. If no announcement was used, check header for encodings and strip payload
-        if not encodings:
-            encodings = header.get(HQFBP_CBOR_KEYS["Content-Encoding"])
-            if encodings:
-                payload = self._strip_post_boundary_encodings(payload, encodings)
 
         # 4. Handle Announcement
         content_type = header.get(HQFBP_CBOR_KEYS["Content-Type"])
@@ -118,6 +138,11 @@ class Deframer:
         # 6. Check for Completion
         if len(session['chunks']) == session['total_chunks']:
             self._complete_message(session_key)
+            # Cleanup announcement
+            self._announcements.pop((src_callsign, msg_id), None)
+            # And also potentially the Original-Message-Id association if any
+            if orig_msg_id != msg_id:
+                self._announcements.pop((src_callsign, orig_msg_id), None)
 
     def next_event(self) -> Optional[Union[PDUEvent, MessageEvent]]:
         """Return the next available event, or None if queue is empty."""
@@ -136,23 +161,37 @@ class Deframer:
 
     def _strip_post_boundary_encodings(self, data: bytes, encodings: Union[int, str, List[Union[int, str]]]) -> bytes:
         """Strip encodings found after the 'h' boundary."""
-        if isinstance(encodings, (int, str)):
-            if encodings in (5, 6, "crc16", "crc32"):
-                return verify_and_strip_crc(data, encodings)
+        if encodings is None:
             return data
 
-        # If it's a list, find the boundary 'h' (-1)
-        try:
-            idx = encodings.index(-1)
-            post_encs = encodings[idx + 1:]
-        except ValueError:
-            return data
+        post_encs = []
+        if isinstance(encodings, list):
+            try:
+                idx = encodings.index(-1)
+                post_encs = encodings[idx + 1:]
+            except ValueError:
+                # No boundary marker: all are pre-boundary
+                post_encs = []
+        else:
+            # Single value in Content-Encoding header is ALWAYS pre-boundary (content)
+            # EXCEPT if it's a known integrity check like CRC that we decide to 
+            # allow as a shorthand (though not strictly in RFC for CE field).
+            # But wait, if this is called by the heuristic, 'encodings' might be 
+            # just the post-boundary part we stored. 
+            pass
 
-        # Apply in reverse order of how they were applied (LIFO)
+        # Apply in reverse order (LIFO)
         for enc in reversed(post_encs):
-            if enc in (5, 6, "crc16", "crc32"):
+            if enc in (1, "gzip"):
+                data = gzip.decompress(data)
+            elif enc in (3, "br"):
+                data = brotli.decompress(data)
+            elif enc in (4, "lzma"):
+                data = lzma.decompress(data)
+            elif enc in (5, 6, "crc16", "crc32"):
                 data = verify_and_strip_crc(data, enc)
         return data
+
 
     def _complete_message(self, session_key: Tuple[Optional[str], int]):
         """Assemble chunks, merge headers, and dekrunk pre-boundary encodings."""
