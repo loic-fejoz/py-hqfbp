@@ -136,7 +136,8 @@ def test_generator_config():
     
     assert header[HQFBP_CBOR_KEYS['Src-Callsign']] == "N0CALL"
     assert header[HQFBP_CBOR_KEYS['Dst-Callsign']] == "QST"
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 1 # ["gzip", "h"] optimized to 1
+    # ["gzip", "h"] with chunk(100) becomes [1, "chunk(100)"]
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, "chunk(100)"]
 
 def test_generator_crc_payload_only():
     # Pre-boundary CRC (payload only)
@@ -146,6 +147,7 @@ def test_generator_crc_payload_only():
     
     _, payload = unpack(pdus[0])
     # The whole payload should have CRC at the end
+    from hqfbp import verify_and_strip_crc
     assert verify_and_strip_crc(payload, "crc32") == data
 
 def test_generator_crc_covering_header():
@@ -156,6 +158,7 @@ def test_generator_crc_covering_header():
     
     # The whole PDU should have CRC at the end
     pdu = pdus[0]
+    from hqfbp import verify_and_strip_crc
     pdu_no_crc = verify_and_strip_crc(pdu, "crc32")
     
     # Now unpack the PDU without CRC
@@ -190,8 +193,9 @@ def test_generator_announcement():
     # Decode announcement payload
     import cbor2
     ann_p = cbor2.loads(ann_p_bytes)
-    # It should announce the next message ID and its encodings
-    assert ann_p[HQFBP_CBOR_KEYS['Message-Id']] == 2 # Announcement is 1, data is 2
+    # Announcement is 1, data is 2
+    assert ann_p[HQFBP_CBOR_KEYS['Message-Id']] == 2 
+    # [1, -1, 6]
     assert ann_p[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1, 6]
     
     # 2. Verify Data PDU
@@ -200,6 +204,7 @@ def test_generator_announcement():
     data_h, data_p = unpack(data_pdu_no_crc)
     
     assert data_h[HQFBP_CBOR_KEYS['Message-Id']] == 2
+    import gzip
     assert gzip.decompress(data_p) == data
 
 def test_generator_parse_encodings():
@@ -245,12 +250,12 @@ def test_generator_rs_chunk_size():
     # Let's try to target a specific header size.
     # Header: {0: msg_id, 10: orig_id, 9: chunk_id, 11: total, 8: file_size, 1: "CALLSIGN", 5: [-1, "rs(255,233)"]}
     # This header is ~30-40 bytes.
-    # If we set max_payload_size = 198, the header + payload will be < 233.
+    # If we set max_payload_size = 185, the header + payload will be < 233.
     # rs_encode will pad the 233 block if it's shorter.
     
     gen = PDUGenerator(
         src_callsign="F4JXQ", 
-        max_payload_size=198, 
+        max_payload_size=185, 
         encodings=["h", "rs(255,233)"]
     )
     
@@ -272,3 +277,36 @@ def test_generator_rs_chunk_size():
         # Unpack should work on these 233 bytes because they are not corrupted
         header, payload = unpack(dec)
         assert header[HQFBP_CBOR_KEYS['Chunk-Id']] == i
+
+def test_generator_explicit_chunk_encoding():
+    # Test that encodings=["gzip", "chunk(10)", "h"] works even with max_payload_size=None
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=["gzip", "chunk(10)", "h"])
+    # 25 bytes of sequential data
+    data = bytes([i % 256 for i in range(25)])
+    
+    pdus = list(gen.generate(data))
+    assert len(pdus) > 1
+    
+    header, _ = unpack(pdus[0])
+    # [1, "chunk(10)"] (h is stripped)
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, "chunk(10)"]
+
+def test_generator_chunk_position():
+    # Case 1: ["gzip", "chunk(10)", "h"] -> gzip applied to WHOLE message
+    data = b"ABCDE" * 10 # 50 bytes
+    gen1 = PDUGenerator(encodings=["gzip", "chunk(10)", "h"])
+    pdus1 = list(gen1.generate(data))
+    
+    # Case 2: ["chunk(10)", "gzip", "h"] -> gzip applied to EACH chunk
+    gen2 = PDUGenerator(encodings=["chunk(10)", "gzip", "h"])
+    pdus2 = list(gen2.generate(data))
+    
+    # Case 1 compresses whole 50 bytes once. Case 2 compresses 10 byte segments.
+    assert len(pdus1) < len(pdus2)
+    
+    h1, p1 = unpack(pdus1[0])
+    h2, p2 = unpack(pdus2[0])
+    
+    assert p1 != p2
+
+

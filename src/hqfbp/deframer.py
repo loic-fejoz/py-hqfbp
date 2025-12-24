@@ -15,6 +15,9 @@ from hqfbp import (
     RS_RE,
     rs_decode
 )
+import re
+
+CHUNK_RE = re.compile(r"chunk\((\d+)\)")
 
 class PDUEvent:
     def __init__(self, header: Dict[int, Any], payload: bytes):
@@ -193,6 +196,8 @@ class Deframer:
             elif enc in (5, 6, "crc16", "crc32"):
                 data = verify_and_strip_crc(data, enc)
             elif isinstance(enc, str):
+                if CHUNK_RE.match(enc):
+                    continue
                 m = RS_RE.match(enc)
                 if m:
                     n, k = map(int, m.groups())
@@ -238,6 +243,8 @@ class Deframer:
             elif enc in (4, "lzma"):
                 data = lzma.decompress(data)
             elif isinstance(enc, str):
+                if CHUNK_RE.match(enc):
+                    continue
                 m = RS_RE.match(enc)
                 if m:
                     n, k = map(int, m.groups())
