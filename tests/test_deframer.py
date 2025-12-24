@@ -210,3 +210,55 @@ def test_deframer_heuristic_multi_encodings():
             found_msg = True
     
     assert found_msg
+
+def test_deframer_multi_sender_interleaved_announcements():
+    deframer = Deframer()
+    
+    # S1: Standard (Peekable)
+    gen1 = PDUGenerator(src_callsign="S1", max_payload_size=10)
+    data1 = b"S1: Basic data"
+    pdus1 = list(gen1.generate(data1))
+    
+    # S2: Scrambled Header (Gzip post-boundary, requires Heuristic)
+    gen2 = PDUGenerator(
+        src_callsign="S2", 
+        max_payload_size=10, 
+        encodings=["h", "gzip"],
+        announcement_encodings=["identity"]
+    )
+    data2 = b"S2: Gzipped header data"
+    pdus2 = list(gen2.generate(data2))
+    
+    # S3: Complex Scrambled (Gzip + CRC32 post-boundary)
+    gen3 = PDUGenerator(
+        src_callsign="S3", 
+        max_payload_size=10, 
+        encodings=["h", "gzip", "crc32"],
+        announcement_encodings=["identity"]
+    )
+    data3 = b"S3: Double trouble"
+    pdus3 = list(gen3.generate(data3))
+    
+    # Interleave EVERYTHING: mix announcements and then chunks
+    all_pdus = []
+    max_len = max(len(pdus1), len(pdus2), len(pdus3))
+    for i in range(max_len):
+        if i < len(pdus1): all_pdus.append(pdus1[i])
+        if i < len(pdus2): all_pdus.append(pdus2[i])
+        if i < len(pdus3): all_pdus.append(pdus3[i])
+        
+    for pdu in all_pdus:
+        deframer.receive_bytes(pdu)
+        
+    results = {}
+    while True:
+        ev = deframer.next_event()
+        if ev is None: break
+        if isinstance(ev, MessageEvent):
+            src = ev.header[HQFBP_CBOR_KEYS["Src-Callsign"]]
+            results[src] = ev.payload
+            
+    assert results["S1"] == data1
+    assert results["S2"] == data2
+    assert results["S3"] == data3
+    assert len(results) == 3
