@@ -2,6 +2,8 @@ import io
 import cbor2
 import binascii
 import struct
+import re
+import reedsolo
 from typing import Any, Dict, Tuple, Optional, Union, List
 
 # HQFBP Static Key Mapping as per RFC Section 4
@@ -81,6 +83,31 @@ ENCODING_REGISTRY = {
 
 # Inverse mapping for encoding lookup
 _REV_ENCODING_REGISTRY = {v: k for k, v in ENCODING_REGISTRY.items()}
+
+RS_RE = re.compile(r"rs\((\d+),(\d+)\)")
+
+def rs_encode(data: bytes, n: int, k: int) -> bytes:
+    """Encode data using Reed-Solomon(n, k). Chunks data into k bytes blocks."""
+    rs = reedsolo.RSCodec(n - k)
+    encoded = bytearray()
+    for i in range(0, len(data), k):
+        chunk = data[i:i+k]
+        if len(chunk) < k:
+            chunk = chunk.ljust(k, b'\x00')
+        encoded.extend(rs.encode(chunk))
+    return bytes(encoded)
+
+def rs_decode(data: bytes, n: int, k: int) -> bytes:
+    """Decode data using Reed-Solomon(n, k). Data should be multiple of n bytes."""
+    rs = reedsolo.RSCodec(n - k)
+    decoded = bytearray()
+    for i in range(0, len(data), n):
+        chunk = data[i:i+n]
+        if len(chunk) < n:
+            chunk = chunk.ljust(n, b'\x00')
+        msg, _, _ = rs.decode(chunk)
+        decoded.extend(msg)
+    return bytes(decoded)
 
 def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
     """

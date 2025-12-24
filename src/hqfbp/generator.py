@@ -3,7 +3,7 @@ import lzma
 import brotli
 import cbor2
 from typing import Dict, Any, Optional, List, Union, Generator, Tuple
-from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32
+from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode
 
 class PDUGenerator:
     """
@@ -67,6 +67,11 @@ class PDUGenerator:
                 data += crc16_ccitt(data)
             elif enc in (6, "crc32"):
                 data += crc32(data)
+            elif isinstance(enc, str):
+                m = RS_RE.match(enc)
+                if m:
+                    n, k = map(int, m.groups())
+                    data = rs_encode(data, n, k)
             # Add other encodings here (deflate, etc.) if needed
         return data
 

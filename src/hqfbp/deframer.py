@@ -11,7 +11,9 @@ from hqfbp import (
     HQFBP_CBOR_KEYS, 
     verify_and_strip_crc,
     ENCODING_REGISTRY,
-    COAP_CONTENT_FORMATS
+    COAP_CONTENT_FORMATS,
+    RS_RE,
+    rs_decode
 )
 
 class PDUEvent:
@@ -190,6 +192,11 @@ class Deframer:
                 data = lzma.decompress(data)
             elif enc in (5, 6, "crc16", "crc32"):
                 data = verify_and_strip_crc(data, enc)
+            elif isinstance(enc, str):
+                m = RS_RE.match(enc)
+                if m:
+                    n, k = map(int, m.groups())
+                    data = rs_decode(data, n, k)
         return data
 
 
@@ -230,5 +237,10 @@ class Deframer:
                 data = brotli.decompress(data)
             elif enc in (4, "lzma"):
                 data = lzma.decompress(data)
+            elif isinstance(enc, str):
+                m = RS_RE.match(enc)
+                if m:
+                    n, k = map(int, m.groups())
+                    data = rs_decode(data, n, k)
             # identity or unknown just pass through
         return data
