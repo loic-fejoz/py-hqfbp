@@ -92,19 +92,37 @@ def test_generator_chunking():
     pdus = list(gen.generate(data))
     assert len(pdus) == 6
     
-    # Check first chunk
-    h0, p0 = unpack(pdus[0])
-    assert h0[HQFBP_CBOR_KEYS['Chunk-Id']] == 0
-    assert h0[HQFBP_CBOR_KEYS['Total-Chunks']] == 6
-    assert h0[HQFBP_CBOR_KEYS['Original-Message-Id']] == h0[HQFBP_CBOR_KEYS['Message-Id']]
-    assert len(p0) == 10
+    first_msg_id = None
+    prev_msg_id = None
     
-    # Check last chunk
-    h5, p5 = unpack(pdus[5])
-    assert h5[HQFBP_CBOR_KEYS['Chunk-Id']] == 5
-    assert h5[HQFBP_CBOR_KEYS['Message-Id']] > h0[HQFBP_CBOR_KEYS['Message-Id']]
-    assert h5[HQFBP_CBOR_KEYS['Original-Message-Id']] == h0[HQFBP_CBOR_KEYS['Message-Id']]
-    assert len(p5) == 4 # 54 % 10
+    for i, pdu in enumerate(pdus):
+        header, payload = unpack(pdu)
+        
+        # Check sequential Chunk-Id
+        assert header[HQFBP_CBOR_KEYS['Chunk-Id']] == i
+        
+        # Check Total-Chunks consistency
+        assert header[HQFBP_CBOR_KEYS['Total-Chunks']] == 6
+        
+        # Check Message-Id monotonicity (increases by 1)
+        curr_msg_id = header[HQFBP_CBOR_KEYS['Message-Id']]
+        if prev_msg_id is not None:
+            assert curr_msg_id == prev_msg_id + 1
+        prev_msg_id = curr_msg_id
+        
+        # Check Original-Message-Id consistency
+        if first_msg_id is None:
+            first_msg_id = curr_msg_id
+        assert header[HQFBP_CBOR_KEYS['Original-Message-Id']] == first_msg_id
+        
+        # Check Src-Callsign consistency
+        assert header[HQFBP_CBOR_KEYS['Src-Callsign']] == "F4JXQ"
+        
+        # Check payload length
+        if i < 5:
+            assert len(payload) == 10
+        else:
+            assert len(payload) == 4 # 54 % 10
 
 def test_generator_config():
     gen = PDUGenerator()
@@ -216,3 +234,41 @@ def test_generator_parse_encodings():
     
     # Unique value as list then boundary
     assert gen._parse_encodings([1, "h", 6]) == ([1], [6], True)
+
+def test_generator_rs_chunk_size():
+    # To ensure RS(255,233) chunks are exactly 255 bytes:
+    # 1. We must use post-boundary encoding ["h", "rs(255,233)"]
+    # 2. Each chunk (header + payload) must be exactly 233 bytes BEFORE RS encoding.
+    # 3. PDUGenerator will chunk the content into max_payload_size.
+    # 4. We need to account for the header size in each chunk.
+    
+    # Let's try to target a specific header size.
+    # Header: {0: msg_id, 10: orig_id, 9: chunk_id, 11: total, 8: file_size, 1: "CALLSIGN", 5: [-1, "rs(255,233)"]}
+    # This header is ~30-40 bytes.
+    # If we set max_payload_size = 198, the header + payload will be < 233.
+    # rs_encode will pad the 233 block if it's shorter.
+    
+    gen = PDUGenerator(
+        src_callsign="F4JXQ", 
+        max_payload_size=198, 
+        encodings=["h", "rs(255,233)"]
+    )
+    
+    # 500 bytes of data -> 3 chunks (500 / 180 = 2.77)
+    data = b"R" * 500
+    pdus = list(gen.generate(data))
+    
+    assert len(pdus) == 3
+    for i, pdu in enumerate(pdus):
+        # Each PDU must be N (255)
+        assert len(pdu) == 255
+        
+        # Verify it decodes correctly
+        from hqfbp import rs_decode
+        dec = rs_decode(pdu, 255, 233)
+        assert len(dec) == 233
+        
+        # The first 233 bytes should be the CBOR header + payload
+        # Unpack should work on these 233 bytes because they are not corrupted
+        header, payload = unpack(dec)
+        assert header[HQFBP_CBOR_KEYS['Chunk-Id']] == i

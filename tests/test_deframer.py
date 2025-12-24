@@ -1,6 +1,6 @@
 import pytest
 import gzip
-from hqfbp import pack, HQFBP_CBOR_KEYS, crc32
+from hqfbp import pack, unpack, HQFBP_CBOR_KEYS, crc32
 from hqfbp.deframer import Deframer, PDUEvent, MessageEvent
 from hqfbp.generator import PDUGenerator
 
@@ -26,27 +26,55 @@ def test_deframer_chunked():
     deframer = Deframer()
     gen = PDUGenerator(src_callsign="F4JXQ-1", max_payload_size=10)
     data = b"This is a longer message that will be chunked."
-    
     pdus = list(gen.generate(data))
     assert len(pdus) > 1
     
-    for pdu in pdus:
+    pdu_events = []
+    msg_ev = None
+    processed_pdus = 0
+    
+    prev_msg_id = None
+    first_orig_msg_id = None
+    
+    for i, pdu in enumerate(pdus):
         deframer.receive_bytes(pdu)
-    
-    # Drain PDUEvents
-    events = []
-    while True:
+        processed_pdus += 1
+        
+        # Check that we get exactly one PDUEvent per receive_bytes
         ev = deframer.next_event()
-        if ev is None or isinstance(ev, MessageEvent):
-            if ev: events.append(ev)
-            break
-        events.append(ev)
+        assert isinstance(ev, PDUEvent)
+        h, p = unpack(pdu)
+        assert ev.payload == p
+        
+        # Check Message-Id monotonicity in PDUs
+        curr_msg_id = ev.header[HQFBP_CBOR_KEYS["Message-Id"]]
+        if prev_msg_id is not None:
+            assert curr_msg_id == prev_msg_id + 1
+        prev_msg_id = curr_msg_id
+        
+        # Check Original-Message-Id consistency
+        orig_id = ev.header[HQFBP_CBOR_KEYS["Original-Message-Id"]]
+        if first_orig_msg_id is None:
+            first_orig_msg_id = orig_id
+        assert orig_id == first_orig_msg_id
+        
+        pdu_events.append(ev)
+        
+        # Check that MessageEvent is NOT emitted until the last chunk
+        msg_ev = deframer.next_event()
+        if i < len(pdus) - 1:
+            assert msg_ev is None
+        else:
+            assert isinstance(msg_ev, MessageEvent)
     
-    assert len(events) == len(pdus) + 1
-    msg_ev = events[-1]
-    assert isinstance(msg_ev, MessageEvent)
+    assert len(pdu_events) == len(pdus)
     assert msg_ev.payload == data
     assert msg_ev.header[HQFBP_CBOR_KEYS["Src-Callsign"]] == "F4JXQ-1"
+    # Message-Id, Chunk-Id, Original-Message-Id, Total-Chunks are excluded from merged header
+    assert HQFBP_CBOR_KEYS["Message-Id"] not in msg_ev.header
+    assert HQFBP_CBOR_KEYS["Chunk-Id"] not in msg_ev.header
+    assert HQFBP_CBOR_KEYS["Original-Message-Id"] not in msg_ev.header
+    assert HQFBP_CBOR_KEYS["Total-Chunks"] not in msg_ev.header
 
 def test_deframer_multi_sender():
     deframer = Deframer()
@@ -64,23 +92,35 @@ def test_deframer_multi_sender():
     deframer.receive_bytes(pdus2[0])
     deframer.receive_bytes(pdus1[1])
     
-    # S1 should be complete, S2 still pending
-    evs = []
+    # Drain events
+    events = []
     while True:
         ev = deframer.next_event()
         if ev is None: break
-        evs.append(ev)
+        events.append(ev)
+        
+    # S1 should be complete (PDU, PDU, PDU, Message) - wait
+    # pdus1[0] -> PDUEvent
+    # pdus2[0] -> PDUEvent
+    # pdus1[1] -> PDUEvent, MessageEvent (S1)
     
-    assert any(isinstance(e, MessageEvent) and e.header[HQFBP_CBOR_KEYS["Src-Callsign"]] == "S1" for e in evs)
-    assert not any(isinstance(e, MessageEvent) and e.header[HQFBP_CBOR_KEYS["Src-Callsign"]] == "S2" for e in evs)
+    # Verify S1 completion
+    s1_messages = [e for e in events if isinstance(e, MessageEvent) and e.header[HQFBP_CBOR_KEYS["Src-Callsign"]] == "S1"]
+    assert len(s1_messages) == 1
+    assert s1_messages[0].payload == b"S1DATA"
+    
+    # Verify S2 NOT complete
+    s2_messages = [e for e in events if isinstance(e, MessageEvent) and e.header[HQFBP_CBOR_KEYS["Src-Callsign"]] == "S2"]
+    assert len(s2_messages) == 0
     
     # Complete S2
     deframer.receive_bytes(pdus2[1])
-    ev = deframer.next_event()
-    assert isinstance(ev, PDUEvent)
-    ev = deframer.next_event()
-    assert isinstance(ev, MessageEvent)
-    assert ev.payload == b"S2DATA"
+    ev_pdu = deframer.next_event()
+    assert isinstance(ev_pdu, PDUEvent)
+    ev_msg = deframer.next_event()
+    assert isinstance(ev_msg, MessageEvent)
+    assert ev_msg.payload == b"S2DATA"
+    assert ev_msg.header[HQFBP_CBOR_KEYS["Src-Callsign"]] == "S2"
 
 def test_deframer_announcement_and_crc():
     deframer = Deframer()
