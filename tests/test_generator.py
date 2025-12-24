@@ -151,8 +151,8 @@ def test_generator_announcement():
     # announcement: crc16 the announcement pdu
     gen = PDUGenerator(
         src_callsign="F4JXQ",
-        encodings=["gzip", "h", "crc32"],
-        announcement_encodings=["crc16"]
+        encodings=["gzip", "h", "crc32"], # Not realistic as CRC32 is still transparent but test the principle
+        announcement_encodings=["h", "crc16"]
     )
     
     pdus = list(gen.generate(data))

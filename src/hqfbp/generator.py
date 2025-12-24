@@ -8,7 +8,7 @@ from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32
 class PDUGenerator:
     """
     Helper class to generate HQFBP PDUs, supporting common fields and automatic chunking.
-    Supports data compression (gzip, lzma) and pre/post boundary encodings.
+    Supports data compression (gzip, br, lzma) and pre/post boundary encodings (crc16, crc32).
     """
     
     def __init__(
@@ -23,7 +23,15 @@ class PDUGenerator:
         self.dst_callsign = dst_callsign
         self.max_payload_size = max_payload_size
         self.encodings = encodings
-        self.announcement_encodings = announcement_encodings
+        if announcement_encodings:
+            self.announcement_encoder = PDUGenerator(
+                src_callsign=src_callsign,
+                dst_callsign=dst_callsign,
+                max_payload_size=max_payload_size,
+                encodings=announcement_encodings
+            )
+        else:
+            self.announcement_encoder = None
         self._next_msg_id = 1
 
     def set_callsigns(self, src: Optional[str] = None, dst: Optional[str] = None):
@@ -98,12 +106,11 @@ class PDUGenerator:
         encoded_data = self._apply_encodings(data, pre_enc)
         encoded_size = len(encoded_data)
         
-        # Determine the first data message ID
-        # We need it if we have an announcement
-        if self.announcement_encodings:
-            # The announcement itself will consume one ID
-            ann_msg_id = self._get_next_msg_id()
-            upcoming_msg_id = self._next_msg_id
+        if self.announcement_encoder:
+            # Determine the first data message ID
+            # We need it if we have an announcement
+            self.announcement_encoder._next_msg_id = self._next_msg_id
+            upcoming_msg_id = self._next_msg_id + 1
             
             # 1. Prepare Announcement Payload (CBOR map)
             ann_payload_dict = {
@@ -112,22 +119,13 @@ class PDUGenerator:
             if self.encodings:
                 ann_payload_dict[HQFBP_CBOR_KEYS['Content-Encoding']] = self.encodings
             
-            ann_payload_bytes = pack(ann_payload_dict, b"")
-            
-            # 2. Prepare Announcement Header
-            ann_header = {
-                HQFBP_CBOR_KEYS['Message-Id']: ann_msg_id,
-                HQFBP_CBOR_KEYS['Content-Type']: "application/vnd.hqfbp+cbor",
-            }
-            if self.src_callsign:
-                ann_header[HQFBP_CBOR_KEYS['Src-Callsign']] = self.src_callsign
-            if self.dst_callsign:
-                ann_header[HQFBP_CBOR_KEYS['Dst-Callsign']] = self.dst_callsign
-            
-            # 3. Pack and Encode Announcement PDU
-            ann_pdu = pack(ann_header, ann_payload_bytes)
-            ann_post_enc = self._split_announcement_encodings()
-            yield self._apply_encodings(ann_pdu, ann_post_enc)
+            # 2. Generate Announcement PDU
+            for pdu in self.announcement_encoder.generate(
+                pack(ann_payload_dict, b""),
+                content_type="application/vnd.hqfbp+cbor"
+            ):
+                yield pdu
+            self._next_msg_id = self.announcement_encoder._next_msg_id
 
         # Determine if we need to chunk
         if self.max_payload_size and encoded_size > self.max_payload_size:
