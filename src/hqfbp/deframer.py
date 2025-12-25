@@ -15,11 +15,11 @@ from hqfbp import (
     RS_RE,
     rs_decode,
     RQ_RE,
-    rq_decode
+    rq_decode,
+    CHUNK_RE
 )
 import re
 
-CHUNK_RE = re.compile(r"chunk\((\d+)\)")
 
 class PDUEvent:
     def __init__(self, header: Dict[int, Any], payload: bytes):
@@ -174,17 +174,16 @@ class Deframer:
         post_encs = []
         if isinstance(encodings, list):
             try:
-                idx = encodings.index(-1)
-                post_encs = encodings[idx + 1:]
+                if "h" in encodings:
+                    boundary_idx = encodings.index("h")
+                elif -1 in encodings:
+                    boundary_idx = encodings.index(-1)
+                post_encs = encodings[boundary_idx + 1:]
             except ValueError:
                 # No boundary marker: all are pre-boundary
                 post_encs = []
         else:
             # Single value in Content-Encoding header is ALWAYS pre-boundary (content)
-            # EXCEPT if it's a known integrity check like CRC that we decide to 
-            # allow as a shorthand (though not strictly in RFC for CE field).
-            # But wait, if this is called by the heuristic, 'encodings' might be 
-            # just the post-boundary part we stored. 
             pass
 
         # Apply in reverse order (LIFO)

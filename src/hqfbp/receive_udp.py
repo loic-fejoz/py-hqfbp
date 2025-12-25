@@ -84,7 +84,7 @@ def main():
                     try:
                         with open(filepath, "wb") as f:
                             f.write(ev.payload)
-                        print(f"Successfully reassembled message from {callsign}: {filepath} ({len(ev.payload)} bytes)")
+                        print(f" ✅ Successfully reassembled message from {callsign}: {filepath} ({len(ev.payload)} bytes)")
                         print(f"  Header: {human_readable_json(ev.header)}")
                     except Exception as e:
                         print(f"Error writing file {filepath}: {e}", file=sys.stderr)

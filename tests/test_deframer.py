@@ -75,6 +75,15 @@ def test_deframer_chunked():
     assert HQFBP_CBOR_KEYS["Chunk-Id"] not in msg_ev.header
     assert HQFBP_CBOR_KEYS["Original-Message-Id"] not in msg_ev.header
     assert HQFBP_CBOR_KEYS["Total-Chunks"] not in msg_ev.header
+    
+    # Content-Encoding should NOT contain any chunk(size) markers
+    if HQFBP_CBOR_KEYS["Content-Encoding"] in msg_ev.header:
+        ce = msg_ev.header[HQFBP_CBOR_KEYS["Content-Encoding"]]
+        from hqfbp import CHUNK_RE
+        if isinstance(ce, list):
+            assert not any(isinstance(e, str) and CHUNK_RE.match(e) for e in ce)
+        elif isinstance(ce, str):
+            assert not CHUNK_RE.match(ce)
 
 def test_deframer_multi_sender():
     deframer = Deframer()

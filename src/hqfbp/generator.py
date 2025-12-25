@@ -3,10 +3,9 @@ import lzma
 import brotli
 import cbor2
 from typing import Dict, Any, Optional, List, Union, Generator, Tuple
-from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode
+from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode, CHUNK_RE
 import re
 
-CHUNK_RE = re.compile(r"chunk\((\d+)\)")
 
 class PDUGenerator:
     """

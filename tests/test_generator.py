@@ -136,8 +136,9 @@ def test_generator_config():
     
     assert header[HQFBP_CBOR_KEYS['Src-Callsign']] == "N0CALL"
     assert header[HQFBP_CBOR_KEYS['Dst-Callsign']] == "QST"
-    # ["gzip", "h"] with chunk(100) becomes [1, "chunk(100)"]
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, "chunk(100)"]
+    # ["gzip", "h"] with chunk(100) becomes [1, "chunk(100)"] but chunk(100) is stripped in pack()
+    # So it should be just 1 (gzip)
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 1
 
 def test_generator_crc_payload_only():
     # Pre-boundary CRC (payload only)
@@ -288,8 +289,8 @@ def test_generator_explicit_chunk_encoding():
     assert len(pdus) > 1
     
     header, _ = unpack(pdus[0])
-    # [1, "chunk(10)"] (h is stripped)
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, "chunk(10)"]
+    # [1, "chunk(10)"] -> "chunk(10)" is stripped in pack() -> just 1
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 1
 
 def test_generator_chunk_position():
     # Case 1: ["gzip", "chunk(10)", "h"] -> gzip applied to WHOLE message
@@ -338,3 +339,25 @@ def test_generator_rq_post_boundary():
     
     assert payload == data
     assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [-1, "rq(20, 5)"]
+def test_merge_headers_strips_chunk():
+    from hqfbp import merge_headers
+    h1 = {
+        HQFBP_CBOR_KEYS["Message-Id"]: 1,
+        HQFBP_CBOR_KEYS["Content-Encoding"]: ["gzip", "chunk(100)", "h", "crc32"]
+    }
+    h2 = {
+        HQFBP_CBOR_KEYS["Message-Id"]: 2,
+        HQFBP_CBOR_KEYS["Original-Message-Id"]: 1,
+        HQFBP_CBOR_KEYS["Chunk-Id"]: 1,
+        HQFBP_CBOR_KEYS["Content-Encoding"]: ["gzip", "chunk(100)", "h", "crc32"]
+    }
+    
+    merged = merge_headers([h1, h2])
+    # Should exclude 0, 9, 10, 11
+    assert HQFBP_CBOR_KEYS["Message-Id"] not in merged
+    assert HQFBP_CBOR_KEYS["Chunk-Id"] not in merged
+    assert HQFBP_CBOR_KEYS["Original-Message-Id"] not in merged
+    
+    # Should strip chunk(100) but keep the rest
+    # Expected: ["gzip", "h", "crc32"]
+    assert merged[HQFBP_CBOR_KEYS["Content-Encoding"]] == ["gzip", "h", "crc32"]
