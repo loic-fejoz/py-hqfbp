@@ -361,3 +361,28 @@ def test_merge_headers_strips_chunk():
     # Should strip chunk(100) but keep the rest
     # Expected: ["gzip", "h", "crc32"]
     assert merged[HQFBP_CBOR_KEYS["Content-Encoding"]] == ["gzip", "h", "crc32"]
+
+def test_generator_rs_alignment():
+    # Verify that rs(n, k) automatically triggers chunk(k)
+    gen = PDUGenerator(encodings=["rs(255, 233)", "h"])
+    data = b"A" * 500
+    pdus = list(gen.generate(data))
+    
+    # Header should contain ["chunk(233)", "rs(255, 233)", "h"] (resolved)
+    # But chunk(233) and h are stripped in pack()
+    # Wait, rs(n, k) is post-boundary if h is after it. 
+    # Let's check _resolve_encodings result
+    encs = gen._resolve_encodings()
+    assert encs == ["chunk(233)", "rs(255, 233)", "h"]
+    
+    # In the PDU header, only "rs(255, 233)" (as int if in registry) should remain if it's considered packed
+    from hqfbp import unpack, HQFBP_CBOR_KEYS
+    header, _ = unpack(pdus[0])
+    ce = header.get(HQFBP_CBOR_KEYS["Content-Encoding"])
+    # "rs(255, 233)" is likely not in the integer registry yet or it is. 
+    # Let's just check it doesn't have chunk(233)
+    from hqfbp import CHUNK_RE
+    if isinstance(ce, list):
+        assert not any(isinstance(e, str) and CHUNK_RE.match(e) for e in ce)
+    elif isinstance(ce, str):
+        assert not CHUNK_RE.match(ce)

@@ -109,6 +109,19 @@ class PDUGenerator:
                 # No boundary, just append it
                 encs.append(f"chunk({self.max_payload_size})")
         
+        # Ensure 'chunk(k)' before 'rs(n, k)'
+        new_encs = []
+        for e in encs:
+            if isinstance(e, str):
+                m = RS_RE.match(e)
+                if m:
+                    k = int(m.group(2))
+                    chunk_marker = f"chunk({k})"
+                    if not (new_encs and new_encs[-1] == chunk_marker):
+                        new_encs.append(chunk_marker)
+            new_encs.append(e)
+        encs = new_encs
+
         # Ensure a boundary marker is present
         if not (-1 in encs or "h" in encs):
             encs.append(-1)
