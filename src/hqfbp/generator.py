@@ -109,6 +109,10 @@ class PDUGenerator:
                 # No boundary, just append it
                 encs.append(f"chunk({self.max_payload_size})")
         
+        # Ensure a boundary marker is present
+        if not (-1 in encs or "h" in encs):
+            encs.append(-1)
+        
         return encs
 
     def _parse_encodings(self, val: Optional[Union[str, List[Union[str, int]]]]) -> Tuple[List[Union[str, int]], List[Union[str, int]], bool]:
@@ -133,51 +137,79 @@ class PDUGenerator:
 
     def generate(self, data: bytes, content_type: Optional[str] = None) -> Generator[bytes, None, None]:
         """
-        Generate HQFBP PDUs for the given data.
-        
-        The encoding sequence dictates the flow:
-        1. All encodings before first chunk(size) are applied to the whole message.
-        2. chunk(size) splits the message into parts.
-        3. All encodings after last chunk(size) but before 'h' are applied to each chunk.
-        4. packing (CBOR) is performed.
-        5. All encodings after 'h' are applied to the whole packed PDU.
+        Generate HQFBP PDUs for the given data using an iterative approach.
         """
         file_size = len(data)
         full_encs = self._resolve_encodings()
         
-        # Determine splits
-        # message-wide pre-boundary | chunk(size) | chunk-wide pre-boundary | h | post-boundary
-        pre_h, post_h, _ = self._parse_encodings(full_encs)
+        current_chunks = [data]
         
-        chunk_idx = -1
-        target_max_payload = None
-        for i, e in enumerate(pre_h):
-            if isinstance(e, str):
-                m = CHUNK_RE.match(e)
-                if m:
-                    chunk_idx = i
-                    target_max_payload = int(m.group(1))
-                    break # We take the first chunk(size) as the split point
-        
-        if chunk_idx != -1:
-            msg_pre = pre_h[:chunk_idx]
-            chunk_pre = pre_h[chunk_idx + 1:]
-        else:
-            msg_pre = pre_h
-            chunk_pre = []
-            target_max_payload = None
-
-        # 1. Apply message-wide pre-boundary encodings
-        encoded_data = self._apply_encodings(data, msg_pre)
-        encoded_size = len(encoded_data)
+        ann_msg_id = None
+        data_orig_id = None
         
         if self.announcement_encoder:
-            # Announcements use the full resolved encodings of the data message
-            self.announcement_encoder._next_msg_id = self._next_msg_id
-            upcoming_msg_id = self._next_msg_id + 1
+            ann_msg_id = self._get_next_msg_id()
+            data_orig_id = self._next_msg_id
+        else:
+            data_orig_id = self._next_msg_id
+
+        header_template = {
+            HQFBP_CBOR_KEYS['File-Size']: file_size,
+        }
+        if self.src_callsign: header_template[HQFBP_CBOR_KEYS['Src-Callsign']] = self.src_callsign
+        if self.dst_callsign: header_template[HQFBP_CBOR_KEYS['Dst-Callsign']] = self.dst_callsign
+        if full_encs: header_template[HQFBP_CBOR_KEYS['Content-Encoding']] = full_encs
+        if content_type: header_template[HQFBP_CBOR_KEYS['Content-Type']] = content_type
+
+        for enc in full_encs:
+            if enc in (-1, "h"):
+                # Boundary marker: Pack everything into PDUs
+                total_chunks = len(current_chunks)
+                
+                new_chunks = []
+                for i, chunk_data in enumerate(current_chunks):
+                    header = header_template.copy()
+                    
+                    # Message-Id management
+                    if i == 0:
+                        msg_id = data_orig_id
+                        if self._next_msg_id == msg_id:
+                            self._next_msg_id += 1
+                    else:
+                        msg_id = self._get_next_msg_id()
+
+                    if total_chunks > 1:
+                        header[HQFBP_CBOR_KEYS['Total-Chunks']] = total_chunks
+                        header[HQFBP_CBOR_KEYS['Chunk-Id']] = i
+                        header[HQFBP_CBOR_KEYS['Original-Message-Id']] = data_orig_id
+                        header[HQFBP_CBOR_KEYS['Message-Id']] = msg_id
+                    else:
+                        header[HQFBP_CBOR_KEYS['Message-Id']] = msg_id
+                    
+                    if i > 0 and HQFBP_CBOR_KEYS['Content-Type'] in header:
+                        del header[HQFBP_CBOR_KEYS['Content-Type']]
+                        
+                    new_chunks.append(pack(header, chunk_data))
+                current_chunks = new_chunks
+            elif isinstance(enc, str) and CHUNK_RE.match(enc):
+                # Chunking
+                m = CHUNK_RE.match(enc)
+                size = int(m.group(1))
+                new_chunks = []
+                for chunk in current_chunks:
+                    for j in range(0, len(chunk), size):
+                        new_chunks.append(chunk[j : j + size])
+                current_chunks = new_chunks
+            else:
+                # Transformation
+                current_chunks = [self._apply_encodings(c, [enc]) for c in current_chunks]
+
+        # Yield Announcement if requested
+        if self.announcement_encoder:
+            self.announcement_encoder._next_msg_id = ann_msg_id
             
             ann_payload_dict = {
-                HQFBP_CBOR_KEYS['Message-Id']: upcoming_msg_id,
+                HQFBP_CBOR_KEYS['Message-Id']: data_orig_id,
             }
             if full_encs:
                 ann_payload_dict[HQFBP_CBOR_KEYS['Content-Encoding']] = full_encs
@@ -187,56 +219,7 @@ class PDUGenerator:
                 content_type="application/vnd.hqfbp+cbor"
             ):
                 yield pdu
-            self._next_msg_id = self.announcement_encoder._next_msg_id
 
-        # 2. Chunking
-        if target_max_payload and encoded_size > target_max_payload:
-            total_chunks = (encoded_size + target_max_payload - 1) // target_max_payload
-            original_msg_id = self._get_next_msg_id()
-            
-            for i in range(total_chunks):
-                start = i * target_max_payload
-                end = min(start + target_max_payload, encoded_size)
-                chunk_payload = encoded_data[start:end]
-                
-                # 3. Apply chunk-wide pre-boundary encodings (e.g. per-chunk compression)
-                final_chunk_payload = self._apply_encodings(chunk_payload, chunk_pre)
-                
-                header = {
-                    HQFBP_CBOR_KEYS['Message-Id']: self._get_next_msg_id() if i > 0 else original_msg_id,
-                    HQFBP_CBOR_KEYS['Original-Message-Id']: original_msg_id,
-                    HQFBP_CBOR_KEYS['Chunk-Id']: i,
-                    HQFBP_CBOR_KEYS['Total-Chunks']: total_chunks,
-                    HQFBP_CBOR_KEYS['File-Size']: file_size,
-                }
-                
-                if self.src_callsign:
-                    header[HQFBP_CBOR_KEYS['Src-Callsign']] = self.src_callsign
-                if self.dst_callsign:
-                    header[HQFBP_CBOR_KEYS['Dst-Callsign']] = self.dst_callsign
-                if full_encs:
-                    header[HQFBP_CBOR_KEYS['Content-Encoding']] = full_encs
-                if content_type and i == 0:
-                    header[HQFBP_CBOR_KEYS['Content-Type']] = content_type
-                
-                pdu = pack(header, final_chunk_payload)
-                # 4. Apply post-boundary encodings (e.g. FEC) to the whole PDU
-                yield self._apply_encodings(pdu, post_h)
-        else:
-            # Single PDU (even if chunk_pre exists, we apply it once)
-            final_payload = self._apply_encodings(encoded_data, chunk_pre)
-            header = {
-                HQFBP_CBOR_KEYS['Message-Id']: self._get_next_msg_id(),
-                HQFBP_CBOR_KEYS['File-Size']: file_size,
-            }
-            if self.src_callsign:
-                header[HQFBP_CBOR_KEYS['Src-Callsign']] = self.src_callsign
-            if self.dst_callsign:
-                header[HQFBP_CBOR_KEYS['Dst-Callsign']] = self.dst_callsign
-            if full_encs:
-                header[HQFBP_CBOR_KEYS['Content-Encoding']] = full_encs
-            if content_type:
-                header[HQFBP_CBOR_KEYS['Content-Type']] = content_type
-            
-            pdu = pack(header, final_payload)
-            yield self._apply_encodings(pdu, post_h)
+        # Yield Data PDUs
+        for chunk in current_chunks:
+            yield chunk
