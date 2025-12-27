@@ -218,6 +218,12 @@ def test_deframer_heuristic_gzip_header():
     # upcoming msg will use ["h", "gzip"].
     deframer.receive_bytes(pdus[0])
     
+    while True:
+        ev = deframer.next_event()
+        if ev is None: break
+        if isinstance(ev, PDUEvent):
+            assert ev.header[HQFBP_CBOR_KEYS["Src-Callsign"]] == "HEURISTIC-1"
+
     # 2. Process data PDU. 
     # deframer.receive_bytes(pdus[1])
     # The first 'unpack' in receive_bytes will fail.

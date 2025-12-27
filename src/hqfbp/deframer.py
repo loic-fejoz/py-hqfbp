@@ -64,10 +64,10 @@ class Deframer:
         encodings = None
         src_callsign = None
         msg_id = None
-
         if header_unpacked_directly and isinstance(peek_header, dict):
             src_callsign = peek_header.get(HQFBP_CBOR_KEYS["Src-Callsign"])
             msg_id = peek_header.get(HQFBP_CBOR_KEYS["Message-Id"])
+            msg_id = peek_header.get(HQFBP_CBOR_KEYS["Original-Message-Id"], msg_id)
             if msg_id is not None:
                 encodings = self._announcements.get((src_callsign, msg_id))
                 if encodings:
@@ -85,24 +85,19 @@ class Deframer:
                         payload = self._strip_post_boundary_encodings(payload, encodings)
         else:
             # 2. Heuristic: Try unique sequences from announcements
-            # We must try the sequences as they were stored (could be [h, gzip] or [gzip])
-            sequences = list(set(tuple(e) if isinstance(e, list) else (e,) 
-                                for e in self._announcements.values() if e is not None))
-            
-            for seq_tuple in sequences:
-                seq = list(seq_tuple)
-                try:
-                    # We try to treat seq as a Content-Encoding list and strip post-boundary
-                    stripped_data = self._strip_post_boundary_encodings(data, seq)
-                    header, payload = unpack(stripped_data)
-                    src_callsign = header.get(HQFBP_CBOR_KEYS["Src-Callsign"])
-                    msg_id = header.get(HQFBP_CBOR_KEYS["Message-Id"])
-                    if msg_id is not None:
-                        data = stripped_data
-                        encodings = seq
-                        break
-                except Exception:
-                    continue
+            for announcement_encodings in self._announcements.values():
+                if announcement_encodings is not None:
+                    try:
+                        data = self._strip_post_boundary_encodings(data, announcement_encodings)
+                        header, payload = unpack(data)
+                        src_callsign = header.get(HQFBP_CBOR_KEYS["Src-Callsign"])
+                        msg_id = header.get(HQFBP_CBOR_KEYS["Message-Id"])
+                        if msg_id is not None:
+                            data = data
+                            encodings = announcement_encodings
+                            break
+                    except Exception:
+                        continue
 
         if header is None or msg_id is None:
             return
@@ -174,11 +169,13 @@ class Deframer:
         post_encs = []
         if isinstance(encodings, list):
             try:
+                boundary_idx = None
                 if "h" in encodings:
                     boundary_idx = encodings.index("h")
                 elif -1 in encodings:
                     boundary_idx = encodings.index(-1)
-                post_encs = encodings[boundary_idx + 1:]
+                if boundary_idx:
+                    post_encs = encodings[boundary_idx + 1:]
             except ValueError:
                 # No boundary marker: all are pre-boundary
                 post_encs = []
