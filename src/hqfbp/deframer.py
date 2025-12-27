@@ -82,7 +82,13 @@ class Deframer:
                     encodings = peek_header.get(HQFBP_CBOR_KEYS["Content-Encoding"])
                     header, payload = peek_header, _
                     if encodings:
-                        payload = self._strip_post_boundary_encodings(payload, encodings)
+                        try:
+                            # Strip post-boundary encodings from the FULL data
+                            # because post-boundary encodings (like CRC) cover the header too.
+                            data = self._strip_post_boundary_encodings(data, encodings)
+                            header, payload = unpack(data)
+                        except Exception:
+                            return # Inconsistent
         else:
             # 2. Heuristic: Try unique sequences from announcements
             for announcement_encodings in self._announcements.values():
@@ -112,6 +118,11 @@ class Deframer:
         )
 
         if is_announcement:
+            # Apply pre-boundary decodings to the announcement payload itself
+            ann_encs = header.get(HQFBP_CBOR_KEYS["Content-Encoding"])
+            if ann_encs:
+                payload = self._apply_pre_boundary_decodings(payload, ann_encs)
+            
             self._handle_announcement(src_callsign, payload)
             # Announcement PDUs are also events (though usually empty/minimal)
             self._events.append(PDUEvent(header, payload))
@@ -174,7 +185,7 @@ class Deframer:
                     boundary_idx = encodings.index("h")
                 elif -1 in encodings:
                     boundary_idx = encodings.index(-1)
-                if boundary_idx:
+                if boundary_idx is not None:
                     post_encs = encodings[boundary_idx + 1:]
             except ValueError:
                 # No boundary marker: all are pre-boundary
@@ -232,7 +243,10 @@ class Deframer:
             pre_encs = [encodings]
         elif isinstance(encodings, list):
             try:
-                idx = encodings.index(-1)
+                if -1 in encodings:
+                    idx = encodings.index(-1)
+                else:
+                    idx = encodings.index("h")
                 pre_encs = encodings[:idx]
             except ValueError:
                 pre_encs = encodings
@@ -245,6 +259,8 @@ class Deframer:
                 data = brotli.decompress(data)
             elif enc in (4, "lzma"):
                 data = lzma.decompress(data)
+            elif enc in (5, 6, "crc16", "crc32"):
+                data = verify_and_strip_crc(data, enc)                
             elif isinstance(enc, str):
                 if CHUNK_RE.match(enc):
                     continue
