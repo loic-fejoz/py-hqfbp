@@ -44,7 +44,8 @@ class TestCLIUDP(unittest.TestCase):
                     src_callsign="F4JXQ",
                     max_payload_size=100,
                     encodings=["gzip", "h"],
-                    announcement_encodings=None
+                    announcement_encodings=None,
+                    initial_msg_id=1
                 )
                 self.assertEqual(mock_sock_instance.sendto.call_count, 2)
 
