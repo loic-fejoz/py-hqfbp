@@ -62,12 +62,14 @@ class SimulationMetrics:
     def report(self, format="markdown") -> str:
         efficiency = (self.total_payload_bits / self.total_bits_sent * 100) if self.total_bits_sent > 0 else 0
         packet_loss_rate = (self.pdus_lost / self.total_pdus_sent * 100) if self.total_pdus_sent > 0 else 0
+        file_loss_rate = ((self.files_attempted - self.files_recovered) / self.files_attempted * 100) if self.files_attempted > 0 else 0
         overhead = ((self.header_bits + self.padding_bits) / self.total_bits_sent * 100) if self.total_bits_sent > 0 else 0
         fec_recovery = (self.files_recovered / self.files_attempted * 100) if self.files_attempted > 0 else 0
 
         data = {
             "Total Bytes Sent": self.total_bits_sent // 8,
             "Packet Loss Rate (%)": round(packet_loss_rate, 2),
+            "File Loss Rate (%)": round(file_loss_rate, 2),
             "FEC Recovery Rate (%)": round(fec_recovery, 2),
             "Transmission Efficiency (%)": round(efficiency, 2),
             "Max Burst Loss": self.max_burst_loss,
@@ -83,10 +85,19 @@ class SimulationMetrics:
             writer.writerow(data)
             return output.getvalue()
         else:
-            # Markdown
-            lines = ["| Metric | Value |", "| --- | --- |"]
+            # Aligned Markdown for terminal
+            keys = list(data.keys())
+            vals = [str(v) for v in data.values()]
+            
+            k_width = max(len(k) for k in (keys + ["Metric"]))
+            v_width = max(len(v) for v in (vals + ["Value"]))
+            
+            header = f"| {'Metric'.ljust(k_width)} | {'Value'.ljust(v_width)} |"
+            sep = f"| {'-' * k_width} | {'-' * v_width} |"
+            
+            lines = [header, sep]
             for k, v in data.items():
-                lines.append(f"| {k} | {v} |")
+                lines.append(f"| {str(k).ljust(k_width)} | {str(v).ljust(v_width)} |")
             return "\n".join(lines)
 
 def simulate(ber: float, encodings: str, ann_encodings: Optional[str], file_size: int, limit: int):

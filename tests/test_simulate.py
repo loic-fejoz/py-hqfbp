@@ -37,7 +37,7 @@ def test_report_formats():
     
     # Markdown
     md = metrics.report(format="markdown")
-    assert "| Metric | Value |" in md
+    assert "| Metric" in md
     
     # JSON
     js = metrics.report(format="json")
