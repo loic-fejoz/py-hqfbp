@@ -6,7 +6,7 @@ import sys
 import io
 from typing import List, Dict, Any, Optional
 from hqfbp.generator import PDUGenerator
-from hqfbp.deframer import Deframer, MessageEvent
+from hqfbp.deframer import Deframer, MessageEvent, PDUEvent
 from hqfbp import HQFBP_CBOR_KEYS
 
 class BitErrorChannel:
@@ -41,16 +41,14 @@ class SimulationMetrics:
         self.padding_bits = 0
         self.current_burst_loss = 0
         self.max_burst_loss = 0
-        self.total_bit_errors_introduced = 0 # Not directly measurable by protocol but known by sim
+        self.total_bit_errors_introduced = 0
+        self.total_residual_bit_errors = 0
+        self.total_bits_evaluated = 0
 
     def add_pdu(self, pdu_bytes: bytes, lost: bool):
         self.total_pdus_sent += 1
         bits = len(pdu_bytes) * 8
         self.total_bits_sent += bits
-        
-        # Approximate overhead (this is simplified as we don't unpack every PDU for metrics)
-        # In a real sim we'd track actual header/payload split
-        # For now we'll use a heuristic or let the simulator pass details
         
         if lost:
             self.pdus_lost += 1
@@ -59,17 +57,29 @@ class SimulationMetrics:
         else:
             self.current_burst_loss = 0
 
+    def add_residual_errors(self, original_payload: bytes, decoded_payload: bytes):
+        length = min(len(original_payload), len(decoded_payload))
+        self.total_bits_evaluated += length * 8
+        for i in range(length):
+            diff = original_payload[i] ^ decoded_payload[i]
+            # Count set bits (bit errors)
+            self.total_residual_bit_errors += bin(diff).count('1')
+        # Also count length differences as bit errors (simplified)
+        self.total_residual_bit_errors += abs(len(original_payload) - len(decoded_payload)) * 8
+
     def report(self, format="markdown") -> str:
         efficiency = (self.total_payload_bits / self.total_bits_sent * 100) if self.total_bits_sent > 0 else 0
         packet_loss_rate = (self.pdus_lost / self.total_pdus_sent * 100) if self.total_pdus_sent > 0 else 0
         file_loss_rate = ((self.files_attempted - self.files_recovered) / self.files_attempted * 100) if self.files_attempted > 0 else 0
         overhead = ((self.header_bits + self.padding_bits) / self.total_bits_sent * 100) if self.total_bits_sent > 0 else 0
         fec_recovery = (self.files_recovered / self.files_attempted * 100) if self.files_attempted > 0 else 0
+        rber = (self.total_residual_bit_errors / self.total_bits_evaluated) if self.total_bits_evaluated > 0 else 0
 
         data = {
             "Total Bytes Sent": self.total_bits_sent // 8,
             "Packet Loss Rate (%)": round(packet_loss_rate, 2),
             "File Loss Rate (%)": round(file_loss_rate, 2),
+            "Residual Bit Error Rate": f"{rber:.2e}",
             "FEC Recovery Rate (%)": round(fec_recovery, 2),
             "Transmission Efficiency (%)": round(efficiency, 2),
             "Max Burst Loss": self.max_burst_loss,
@@ -116,68 +126,56 @@ def simulate(ber: float, encodings: str, ann_encodings: Optional[str], file_size
             max_payload_size=255
         )
         
-        deframer = Deframer()
-        pdus = list(gen.generate(source_data))
-        
-        for pdu in pdus:
-            # In simulation, we track overhead by looking at the PDU structure
-            # This is a bit of a hack to get "Protocol Overhead"
+        # 1. Generate clean PDUs and extract their expected payloads using a clean deframer
+        clean_pdus_info = []
+        clean_deframer = Deframer()
+        for pdu in gen.generate(source_data):
             try:
-                from hqfbp import unpack
-                header, payload = unpack(pdu)
-                header_packed, _ = unpack(pdu) # Actually just packing/unpacking to estimate
-                # We'll just estimate header as total - payload
-                h_size = len(pdu) - len(payload)
-                metrics.header_bits += h_size * 8
-            except:
-                pass
-
-            noisy_pdu = channel.process(pdu)
-            is_lost = False
-            try:
-                deframer.receive_bytes(noisy_pdu)
-                # If receive_bytes doesn't crash but no event is produced for THIS PDU
-                # it might be dropped internally (e.g. CRC failure)
-                if not deframer._events:
-                    is_lost = True
-            except:
-                is_lost = True
-            
-            metrics.add_pdu(pdu, is_lost)
-            
-            # Clear PDU events to track drops per PDU
-            while deframer.next_event():
-                pass
-
-        # Check if file was recovered
-        # We need to process all events to see if MessageEvent appeared
-        # Deframer.next_event() might have been called above, so we should check reassembly state
-        # Actually session cleanup happens in _complete_message which adds to _events
-        # So we should have seen it.
-        # Let's check session status or similar.
-        # Simpler: just check if ANY MessageEvent was emitted during this file's PDUs
-        # Note: My loop above clears events. I should track if MessageEvent was seen.
-        
-        # Redo loop with recovery check
-        deframer = Deframer()
-        recovered = False
-        for pdu in pdus:
-            noisy_pdu = channel.process(pdu)
-            try:
-                deframer.receive_bytes(noisy_pdu)
+                clean_deframer.receive_bytes(pdu)
                 while True:
-                    ev = deframer.next_event()
+                    ev = clean_deframer.next_event()
                     if ev is None: break
-                    if isinstance(ev, MessageEvent):
+                    if isinstance(ev, PDUEvent):
+                        clean_pdus_info.append((pdu, ev.payload))
+                        h_size = len(pdu) - len(ev.payload)
+                        metrics.header_bits += h_size * 8
+            except Exception:
+                pass
+
+        if not clean_pdus_info:
+            continue
+
+        noisy_deframer = Deframer()
+        recovered = False
+        
+        for clean_pdu, expected_payload in clean_pdus_info:
+            noisy_pdu = channel.process(clean_pdu)
+            
+            try:
+                noisy_deframer.receive_bytes(noisy_pdu)
+                
+                # Check events
+                pdu_accepted = False
+                while True:
+                    ev = noisy_deframer.next_event()
+                    if ev is None: break
+                    
+                    if isinstance(ev, PDUEvent):
+                        pdu_accepted = True
+                        metrics.add_residual_errors(expected_payload, ev.payload)
+                    elif isinstance(ev, MessageEvent):
                         if ev.payload == source_data:
                             recovered = True
-            except:
-                pass
+                
+                metrics.add_pdu(clean_pdu, lost=not pdu_accepted)
+                    
+            except Exception:
+                metrics.add_pdu(clean_pdu, lost=True)
         
         if recovered:
             metrics.files_recovered += 1
             metrics.total_payload_bits += len(source_data) * 8
-
+        
     return metrics
 
 def main():
@@ -188,8 +186,12 @@ def main():
     parser.add_argument("--file-size", type=int, default=1024, help="File size in bytes")
     parser.add_argument("--limit", type=int, default=10, help="Number of files to transmit")
     parser.add_argument("--format", choices=["markdown", "json", "csv"], default="markdown", help="Output format")
+    parser.add_argument("--debug", action="store_true", help="Enable debug prints")
     
     args = parser.parse_args()
+    
+    # We can inject a debug flag into simulate if needed, or just let main handle it
+    # For now, let's just make simulate more verbose if we want, but better keep it clean.
     
     metrics = simulate(args.ber, args.encodings, args.ann_encodings, args.file_size, args.limit)
     print(metrics.report(format=args.format))

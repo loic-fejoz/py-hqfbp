@@ -44,6 +44,7 @@ def test_report_formats():
     import json
     data = json.loads(js)
     assert "Total Bytes Sent" in data
+    assert "Residual Bit Error Rate" in data
     
     # CSV
     csv_out = metrics.report(format="csv")

@@ -133,7 +133,8 @@ class PDUGenerator:
     def _clean_encodings(self, encodings: List[Union[str, int]]) -> List[Union[str, int]]:
         """
         Remove all encodings that shall not be transmitted on air,
-        eg chunk(n), repeat(m), etc
+        eg chunk(n), repeat(m), etc.
+        Keep boundary marker 'h'/-1 as it defines pre/post boundary split.
         """
         return [e for e in encodings if not isinstance(e, str) or (not CHUNK_RE.match(e) and not REPEAT_RE.match(e))]
 
