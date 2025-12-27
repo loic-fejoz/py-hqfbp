@@ -19,7 +19,8 @@ class PDUGenerator:
         dst_callsign: Optional[str] = None,
         max_payload_size: Optional[int] = None,
         encodings: Optional[Union[str, List[Union[str, int]]]] = None,
-        announcement_encodings: Optional[Union[str, List[Union[str, int]]]] = None
+        announcement_encodings: Optional[Union[str, List[Union[str, int]]]] = None,
+        initial_msg_id: int = 1
     ):
         self.src_callsign = src_callsign
         self.dst_callsign = dst_callsign
@@ -30,11 +31,12 @@ class PDUGenerator:
                 src_callsign=src_callsign,
                 dst_callsign=dst_callsign,
                 max_payload_size=None, # Announcements typically shouldn't be chunked
-                encodings=announcement_encodings
+                encodings=announcement_encodings,
+                initial_msg_id=initial_msg_id
             )
         else:
             self.announcement_encoder = None
-        self._next_msg_id = 1
+        self._next_msg_id = initial_msg_id
 
     def set_callsigns(self, src: Optional[str] = None, dst: Optional[str] = None):
         """Configure source and destination callsigns."""
@@ -128,6 +130,14 @@ class PDUGenerator:
         
         return encs
 
+    def _clean_encodings(self, encodings: List[Union[str, int]]) -> List[Union[str, int]]:
+        """
+        Remove all encodings that shall not be transmitted on air,
+        eg chunk(n), repeat(m), etc
+        """
+        return [e for e in encodings if not isinstance(e, str) or not CHUNK_RE.match(e)]
+
+
     def _parse_encodings(self, val: Optional[Union[str, List[Union[str, int]]]]) -> Tuple[List[Union[str, int]], List[Union[str, int]], bool]:
         if not val:
             return [], [], False
@@ -162,17 +172,19 @@ class PDUGenerator:
         
         if self.announcement_encoder:
             ann_msg_id = self._get_next_msg_id()
-            data_orig_id = self._next_msg_id
-        else:
-            data_orig_id = self._next_msg_id
+        data_orig_id = self._next_msg_id
 
         header_template = {
             HQFBP_CBOR_KEYS['File-Size']: file_size,
         }
-        if self.src_callsign: header_template[HQFBP_CBOR_KEYS['Src-Callsign']] = self.src_callsign
-        if self.dst_callsign: header_template[HQFBP_CBOR_KEYS['Dst-Callsign']] = self.dst_callsign
-        if full_encs: header_template[HQFBP_CBOR_KEYS['Content-Encoding']] = full_encs
-        if content_type: header_template[HQFBP_CBOR_KEYS['Content-Type']] = content_type
+        if self.src_callsign:
+            header_template[HQFBP_CBOR_KEYS['Src-Callsign']] = self.src_callsign
+        if self.dst_callsign:
+            header_template[HQFBP_CBOR_KEYS['Dst-Callsign']] = self.dst_callsign
+        if full_encs:
+            header_template[HQFBP_CBOR_KEYS['Content-Encoding']] = self._clean_encodings(full_encs)
+        if content_type:
+            header_template[HQFBP_CBOR_KEYS['Content-Type']] = content_type
 
         for enc in full_encs:
             if enc in (-1, "h"):
@@ -225,7 +237,7 @@ class PDUGenerator:
                 HQFBP_CBOR_KEYS['Message-Id']: data_orig_id,
             }
             if full_encs:
-                ann_payload_dict[HQFBP_CBOR_KEYS['Content-Encoding']] = full_encs
+                ann_payload_dict[HQFBP_CBOR_KEYS['Content-Encoding']] = self._clean_encodings(full_encs)
             
             for pdu in self.announcement_encoder.generate(
                 pack(ann_payload_dict, b""),

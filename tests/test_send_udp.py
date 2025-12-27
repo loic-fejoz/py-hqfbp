@@ -41,7 +41,8 @@ class TestCLI(unittest.TestCase):
                     src_callsign="F4JXQ",
                     max_payload_size=100,
                     encodings=["gzip", "h"],
-                    announcement_encodings=None
+                    announcement_encodings=None,
+                    initial_msg_id=1
                 )
                 mock_gen_instance.generate.assert_called_once_with(b"test data", content_type="text/plain")
                 self.assertEqual(mock_sock_instance.sendto.call_count, 2)
@@ -88,7 +89,40 @@ class TestCLI(unittest.TestCase):
                     src_callsign="F4JXQ",
                     max_payload_size=None,
                     encodings=["h", "rs(255,233)"],
-                    announcement_encodings=None
+                    announcement_encodings=None,
+                    initial_msg_id=1
+                )
+
+    @patch("hqfbp.send_udp.PDUGenerator")
+    @patch("hqfbp.send_udp.socket.socket")
+    @patch("mimetypes.guess_type")
+    @patch("builtins.open", new_callable=mock_open, read_data=b"msg id test")
+    @patch("os.path.isfile")
+    def test_main_msg_id(self, mock_isfile, mock_file, mock_guess, mock_socket, mock_gen):
+        mock_isfile.return_value = True
+        mock_guess.return_value = (None, None)
+        mock_gen_instance = mock_gen.return_value
+        mock_gen_instance.generate.return_value = [b"pdu"]
+        
+        test_args = [
+            "hqfbp-send-udp",
+            "test.bin",
+            "127.0.0.1",
+            "1234",
+            "--src-callsign", "F4JXQ",
+            "--msg-id", "123"
+        ]
+        
+        with patch.object(sys, 'argv', test_args):
+            with patch('sys.stdout', new_callable=MagicMock()):
+                main()
+                
+                mock_gen.assert_called_once_with(
+                    src_callsign="F4JXQ",
+                    max_payload_size=None,
+                    encodings=None,
+                    announcement_encodings=None,
+                    initial_msg_id=123
                 )
 
 if __name__ == "__main__":

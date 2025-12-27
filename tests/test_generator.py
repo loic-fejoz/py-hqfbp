@@ -22,6 +22,18 @@ def test_generator_single_pdu():
     # No encoding
     assert HQFBP_CBOR_KEYS['Content-Encoding'] not in header
     assert payload == data
+    assert payload == data
+
+def test_generator_initial_msg_id():
+    initial_id = 42
+    gen = PDUGenerator(src_callsign="F4JXQ-1", initial_msg_id=initial_id)
+    data = b"Initial ID test"
+    
+    pdus = list(gen.generate(data))
+    
+    assert len(pdus) == 1
+    header, _ = unpack(pdus[0])
+    assert header[HQFBP_CBOR_KEYS['Message-Id']] == initial_id
 
 def test_generator_single_gzip_pdu():
     gen = PDUGenerator(src_callsign="F4JXQ-1", encodings=["gzip"])

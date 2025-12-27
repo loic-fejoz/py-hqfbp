@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--encodings", help="Comma-separated list of encodings (e.g., 'gzip,h,crc32')")
     parser.add_argument("--announcement-encodings", help="Comma-separated list of announcement encodings")
     parser.add_argument("--max-payload-size", type=int, help="Maximum payload size for chunking")
+    parser.add_argument("--msg-id", type=int, default=1, help="Starting message ID")
 
     args = parser.parse_args()
 
@@ -46,7 +47,8 @@ def main():
         src_callsign=args.src_callsign,
         max_payload_size=args.max_payload_size,
         encodings=encodings,
-        announcement_encodings=ann_encs
+        announcement_encodings=ann_encs,
+        initial_msg_id=args.msg_id
     )
 
     # Setup UDP socket
