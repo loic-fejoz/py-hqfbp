@@ -172,6 +172,31 @@ class Deframer:
         except Exception:
             pass
 
+    def _apply_decoding_list(self, data: bytes, encodings: List[Union[int, str]]) -> bytes:
+        """Apply a list of decodings in reverse order (LIFO)."""
+        for enc in reversed(encodings):
+            if enc in (1, "gzip"):
+                data = gzip.decompress(data)
+            elif enc in (3, "br"):
+                data = brotli.decompress(data)
+            elif enc in (4, "lzma"):
+                data = lzma.decompress(data)
+            elif enc in (5, 6, "crc16", "crc32"):
+                data = verify_and_strip_crc(data, enc)
+            elif isinstance(enc, str):
+                if CHUNK_RE.match(enc):
+                    continue
+                m = RS_RE.match(enc)
+                if m:
+                    n, k = map(int, m.groups())
+                    data = rs_decode(data, n, k)
+                else:
+                    m = RQ_RE.match(enc)
+                    if m:
+                        mtu, repair_count = map(int, m.groups())
+                        data = rq_decode(data, mtu, repair_count)
+        return data
+
     def _strip_post_boundary_encodings(self, data: bytes, encodings: Union[int, str, List[Union[int, str]]]) -> bytes:
         """Strip encodings found after the 'h' boundary."""
         if encodings is None:
@@ -194,29 +219,7 @@ class Deframer:
             # Single value in Content-Encoding header is ALWAYS pre-boundary (content)
             pass
 
-        # Apply in reverse order (LIFO)
-        for enc in reversed(post_encs):
-            if enc in (1, "gzip"):
-                data = gzip.decompress(data)
-            elif enc in (3, "br"):
-                data = brotli.decompress(data)
-            elif enc in (4, "lzma"):
-                data = lzma.decompress(data)
-            elif enc in (5, 6, "crc16", "crc32"):
-                data = verify_and_strip_crc(data, enc)
-            elif isinstance(enc, str):
-                if CHUNK_RE.match(enc):
-                    continue
-                m = RS_RE.match(enc)
-                if m:
-                    n, k = map(int, m.groups())
-                    data = rs_decode(data, n, k)
-                else:
-                    m = RQ_RE.match(enc)
-                    if m:
-                        mtu, repair_count = map(int, m.groups())
-                        data = rq_decode(data, mtu, repair_count)
-        return data
+        return self._apply_decoding_list(data, post_encs)
 
 
     def _complete_message(self, session_key: Tuple[Optional[str], int]):
@@ -251,27 +254,4 @@ class Deframer:
             except ValueError:
                 pre_encs = encodings
 
-        # Apply in reverse order (LIFO)
-        for enc in reversed(pre_encs):
-            if enc in (1, "gzip"):
-                data = gzip.decompress(data)
-            elif enc in (3, "br"):
-                data = brotli.decompress(data)
-            elif enc in (4, "lzma"):
-                data = lzma.decompress(data)
-            elif enc in (5, 6, "crc16", "crc32"):
-                data = verify_and_strip_crc(data, enc)                
-            elif isinstance(enc, str):
-                if CHUNK_RE.match(enc):
-                    continue
-                m = RS_RE.match(enc)
-                if m:
-                    n, k = map(int, m.groups())
-                    data = rs_decode(data, n, k)
-                else:
-                    m = RQ_RE.match(enc)
-                    if m:
-                        mtu, repair_count = map(int, m.groups())
-                        data = rq_decode(data, mtu, repair_count)
-            # identity or unknown just pass through
-        return data
+        return self._apply_decoding_list(data, pre_encs)
