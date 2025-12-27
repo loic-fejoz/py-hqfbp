@@ -87,6 +87,7 @@ _REV_ENCODING_REGISTRY = {v: k for k, v in ENCODING_REGISTRY.items()}
 RS_RE = re.compile(r"rs\((\d+),\s*(\d+)\)")
 RQ_RE = re.compile(r"rq\((\d+),\s*(\d+)\)")
 CHUNK_RE = re.compile(r"chunk\((\d+)\)")
+REPEAT_RE = re.compile(r"repeat\((\d+)\)")
 
 def rs_encode(data: bytes, n: int, k: int) -> bytes:
     """Encode data using Reed-Solomon(n, k). Chunks data into k bytes blocks."""
@@ -190,8 +191,8 @@ def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
     ce = cbor_header.get(5)
     if ce is not None:
         if isinstance(ce, list):
-            # Strip synthetic 'chunk(size)' markers
-            ce = [i for i in ce if not (isinstance(i, str) and CHUNK_RE.match(i))]
+            # Strip synthetic 'chunk(size)' and 'repeat(m)' markers
+            ce = [i for i in ce if not (isinstance(i, str) and (CHUNK_RE.match(i) or REPEAT_RE.match(i)))]
             
             ce = [_REV_ENCODING_REGISTRY.get(i, i) if isinstance(i, str) else i for i in ce]
             # Strip trailing boundary marker (-1 / "h") as per user request
@@ -205,7 +206,7 @@ def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
             else:
                 cbor_header[5] = ce
         elif isinstance(ce, str):
-            if CHUNK_RE.match(ce):
+            if CHUNK_RE.match(ce) or REPEAT_RE.match(ce):
                 del cbor_header[5]
             else:
                 val = _REV_ENCODING_REGISTRY.get(ce, ce)
@@ -280,12 +281,12 @@ def merge_headers(headers: list[Dict[int, Any]]) -> Dict[int, Any]:
     ce = merged.get(5) # Content-Encoding
     if ce is not None:
         if isinstance(ce, list):
-            new_ce = [e for e in ce if not (isinstance(e, str) and CHUNK_RE.match(e))]
+            new_ce = [e for e in ce if not (isinstance(e, str) and (CHUNK_RE.match(e) or REPEAT_RE.match(e)))]
             if new_ce:
                 merged[5] = new_ce
             else:
                 merged.pop(5)
-        elif isinstance(ce, str) and CHUNK_RE.match(ce):
+        elif isinstance(ce, str) and (CHUNK_RE.match(ce) or REPEAT_RE.match(ce)):
             merged.pop(5)
 
     return merged

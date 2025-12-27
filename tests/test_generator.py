@@ -323,6 +323,35 @@ def test_generator_chunk_position():
     assert p1 != p2
 
 
+def test_generator_repeat():
+    # Test that repeat(3) duplicates the data
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=["repeat(3)", "h"])
+    data = b"RepeatMe"
+    
+    pdus = list(gen.generate(data))
+    
+    # We expect 3 PDUs, each with the same content
+    assert len(pdus) == 3
+    for pdu in pdus:
+        header, payload = unpack(pdu)
+        assert payload == data
+        # repeat(3) and h should be stripped from the header
+        ce = header.get(HQFBP_CBOR_KEYS["Content-Encoding"])
+        assert ce is None
+
+
+def test_generator_h_repeat():
+    # Test that repeat(3) duplicates the data
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=["h", "repeat(3)"])
+    data = b"RepeatTheFrameWithSameMsgId"
+    
+    pdus = list(gen.generate(data))
+    
+    # We expect 3 PDUs, each with the same content AND header
+    assert len(pdus) == 3
+    for pdu in pdus:
+        assert pdu == pdus[0]
+
 def test_generator_rq_encoding():
     # RaptorQ as pre-boundary encoding
     gen = PDUGenerator(src_callsign="F4JXQ", encodings=["rq(10, 2)"])

@@ -3,7 +3,7 @@ import lzma
 import brotli
 import cbor2
 from typing import Dict, Any, Optional, List, Union, Generator, Tuple
-from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode, CHUNK_RE
+from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode, CHUNK_RE, REPEAT_RE
 import re
 
 
@@ -135,7 +135,7 @@ class PDUGenerator:
         Remove all encodings that shall not be transmitted on air,
         eg chunk(n), repeat(m), etc
         """
-        return [e for e in encodings if not isinstance(e, str) or not CHUNK_RE.match(e)]
+        return [e for e in encodings if not isinstance(e, str) or (not CHUNK_RE.match(e) and not REPEAT_RE.match(e))]
 
 
     def _parse_encodings(self, val: Optional[Union[str, List[Union[str, int]]]]) -> Tuple[List[Union[str, int]], List[Union[str, int]], bool]:
@@ -224,6 +224,15 @@ class PDUGenerator:
                 for chunk in current_chunks:
                     for j in range(0, len(chunk), size):
                         new_chunks.append(chunk[j : j + size])
+                current_chunks = new_chunks
+            elif isinstance(enc, str) and REPEAT_RE.match(enc):
+                # Duplication
+                m = REPEAT_RE.match(enc)
+                count = int(m.group(1))
+                new_chunks = []
+                for chunk in current_chunks:
+                    for _ in range(count):
+                        new_chunks.append(chunk)
                 current_chunks = new_chunks
             else:
                 # Transformation
