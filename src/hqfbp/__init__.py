@@ -85,7 +85,7 @@ ENCODING_REGISTRY = {
 _REV_ENCODING_REGISTRY = {v: k for k, v in ENCODING_REGISTRY.items()}
 
 RS_RE = re.compile(r"rs\((\d+),\s*(\d+)\)")
-RQ_RE = re.compile(r"rq\((\d+),\s*(\d+)\)")
+RQ_RE = re.compile(r"rq\((\d+),\s*(\d+),\s*(\d+)\)")
 CHUNK_RE = re.compile(r"chunk\((\d+)\)")
 REPEAT_RE = re.compile(r"repeat\((\d+)\)")
 
@@ -112,37 +112,41 @@ def rs_decode(data: bytes, n: int, k: int) -> bytes:
         decoded.extend(msg)
     return bytes(decoded)
 
-def rq_encode(data: bytes, mtu: int, repair_count: int) -> bytes:
+def rq_encode(data: bytes, original_count: int, mtu: int, repair_count: int) -> bytes:
     """
     Encode data using RaptorQ (RFC 6330).
-    Prepend 4 bytes for the original data length.
+    
+    Args:
+        data: Binary data to encode.
+        original_count: expected length of the data in bytes. Will be padded or trunked.
+        mtu: Maximum transmission unit for packets.
+        repair_count: Number of repair packets to encode.
+    
+    Returns:
+        bytes: Encoded data.
     """
     import raptorq
+    data = data.ljust(original_count, b'\x00')
+    assert len(data) == original_count
     encoder = raptorq.Encoder.with_defaults(data, mtu)
-    # get_encoded_packets returns source symbols + additional repair_packets_per_block
-    # Wait, the help said repair_packets_per_block.
-    # If I have 1 block and I want S repair packets total, I pass S.
-    packets = encoder.get_encoded_packets(repair_count)
-    return struct.pack(">I", len(data)) + b"".join(packets)
+    return encoder.get_encoded_packets(repair_count)
 
-def rq_decode(data: bytes, mtu: int, repair_count: int) -> bytes:
+def rq_decode(data: List[bytes], original_count: int, mtu: int) -> bytes:
     """
     Decode data using RaptorQ (RFC 6330).
+    
+    Args:
+        data: List of encoded packets.
+        original_count: expected length of the data in bytes. Will be padded or trunked.
+        mtu: Maximum transmission unit for packets.
+    
+    Returns:
+        bytes: Decoded data.
     """
     import raptorq
-    if len(data) < 4:
-        raise ValueError("Data too short for RaptorQ (missing length overhead)")
-    
-    orig_len = struct.unpack(">I", data[:4])[0]
-    payload = data[4:]
-    packet_size = mtu + 4
-    
-    if len(payload) % packet_size != 0:
-        raise ValueError(f"RaptorQ payload length {len(payload)} is not a multiple of packet size {packet_size}")
-        
-    decoder = raptorq.Decoder.with_defaults(orig_len, mtu)
-    for i in range(0, len(payload), packet_size):
-        packet = payload[i:i+packet_size]
+
+    decoder = raptorq.Decoder.with_defaults(original_count, mtu)
+    for packet in data:
         res = decoder.decode(packet)
         if res:
             return bytes(res)

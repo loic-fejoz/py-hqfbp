@@ -172,7 +172,7 @@ class Deframer:
         except Exception:
             pass
 
-    def _apply_decoding_list(self, data: bytes, encodings: List[Union[int, str]]) -> bytes:
+    def _apply_decoding_list(self, data: bytes, encodings: List[Union[int, str]], pre_boundary: bool) -> bytes:
         """Apply a list of decodings in reverse order (LIFO)."""
         for enc in reversed(encodings):
             if enc in (1, "gzip"):
@@ -193,8 +193,9 @@ class Deframer:
                 else:
                     m = RQ_RE.match(enc)
                     if m:
-                        mtu, repair_count = map(int, m.groups())
-                        data = rq_decode(data, mtu, repair_count)
+                        rq_len, mtu, repair_count = map(int, m.groups())
+                        data = [data[i:i+mtu] for i in range(0, len(data), mtu)]
+                        data = rq_decode(data, rq_len, mtu)
         return data
 
     def _strip_post_boundary_encodings(self, data: bytes, encodings: Union[int, str, List[Union[int, str]]]) -> bytes:
@@ -218,8 +219,7 @@ class Deframer:
         else:
             # Single value in Content-Encoding header is ALWAYS pre-boundary (content)
             pass
-
-        return self._apply_decoding_list(data, post_encs)
+        return self._apply_decoding_list(data, post_encs, pre_boundary=False)
 
 
     def _complete_message(self, session_key: Tuple[Optional[str], int]):
@@ -236,10 +236,12 @@ class Deframer:
         encodings = merged_header.get(HQFBP_CBOR_KEYS["Content-Encoding"])
         if encodings:
             full_payload = self._apply_pre_boundary_decodings(full_payload, encodings)
+        if isinstance(full_payload, list):
+            full_payload = b"".join(full_payload)
 
         self._events.append(MessageEvent(merged_header, full_payload))
 
-    def _apply_pre_boundary_decodings(self, data: bytes, encodings: Union[int, str, List[Union[int, str]]]) -> bytes:
+    def _apply_pre_boundary_decodings(self, data: List[bytes], encodings: Union[int, str, List[Union[int, str]]]) -> List[bytes]:
         """Decompress/decode data based on pre-boundary encodings."""
         pre_encs = []
         if isinstance(encodings, (int, str)):
@@ -254,4 +256,4 @@ class Deframer:
             except ValueError:
                 pre_encs = encodings
 
-        return self._apply_decoding_list(data, pre_encs)
+        return self._apply_decoding_list(data, pre_encs, pre_boundary=True)

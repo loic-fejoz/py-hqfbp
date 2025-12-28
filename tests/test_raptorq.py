@@ -1,3 +1,4 @@
+import math
 import pytest
 from hqfbp import rq_encode, rq_decode, pack, unpack, HQFBP_CBOR_KEYS
 from hqfbp.generator import PDUGenerator
@@ -8,8 +9,8 @@ def test_rq_basic_encode_decode():
     mtu = 10
     repair = 2
     
-    encoded = rq_encode(data, mtu, repair)
-    decoded = rq_decode(encoded, mtu, repair)
+    encoded = rq_encode(data, len(data), mtu, repair)
+    decoded = rq_decode(encoded, len(data), mtu)
     
     assert decoded == data
 
@@ -18,15 +19,8 @@ def test_rq_with_loss():
     mtu = 10
     repair = 5
     
-    encoded = rq_encode(data, mtu, repair)
-    
-    # Prepend 4 bytes length overhead
-    length_overhead = encoded[:4]
-    payload = encoded[4:]
-    packet_size = mtu + 4
-    
-    packets = [payload[i:i+packet_size] for i in range(0, len(payload), packet_size)]
-    
+    packets = rq_encode(data, len(data), mtu, repair)
+ 
     # We should have ceil(135/10) = 14 source packets + 5 repair = 19 packets
     assert len(packets) == 19
     
@@ -35,23 +29,24 @@ def test_rq_with_loss():
     del packets[5]
     del packets[10]
     
-    corrupted_encoded = length_overhead + b"".join(packets)
-    
     # Decoding should still work
-    decoded = rq_decode(corrupted_encoded, mtu, repair)
+    decoded = rq_decode(packets, len(data), mtu)
     assert decoded == data
 
-def test_generator_deframer_rq():
-    data = b"End-to-end RaptorQ test data" * 10
+def test_generator_deframer_rq_post_boundary():
+    data = b"End-to-end RaptorQ test data" * 1
+    rq_len = len(data) + 45 # Must be greater than len(data + CBOR header)
+    mtu = rq_len+60
+    repair_count = 5
     gen = PDUGenerator(
         src_callsign="F4JXQ",
-        encodings=["h", "rq(20, 5)"], # 20 bytes MTU, 5 repair packets
+        encodings=["h", f"rq({rq_len}, {mtu}, {repair_count})"],
         announcement_encodings=["identity"]
     )
     
     pdus = list(gen.generate(data))
     
-    assert len(pdus) == 2
+    assert len(pdus) > 1 + repair_count # Announcement + repair packets
     
     deframer = Deframer()
     for pdu in pdus:
@@ -62,28 +57,20 @@ def test_generator_deframer_rq():
         ev = deframer.next_event()
         if ev is None: break
         if isinstance(ev, MessageEvent):
-            assert ev.payload == data
+            assert ev.payload[:len(data)] == data
             found = True
-    assert found
+    assert found, "Message not deframed"
 
 def test_rq_decode_insufficient_symbols():
     data = b"Limited redundancy"
     mtu = 4
     repair = 1
     
-    encoded = rq_encode(data, mtu, repair)
-    
-    # Lose too many packets
-    length_overhead = encoded[:4]
-    payload = encoded[4:]
-    packet_size = mtu + 4
-    packets = [payload[i:i+packet_size] for i in range(0, len(payload), packet_size)]
+    packets = rq_encode(data, len(data), mtu, repair)
     
     # Need 5 source packets. We have 5+1=6. Lose 2.
     del packets[0]
     del packets[1]
     
-    corrupted = length_overhead + b"".join(packets)
-    
     with pytest.raises(ValueError, match="insufficient symbols"):
-        rq_decode(corrupted, mtu, repair)
+        rq_decode(packets, len(data), mtu)

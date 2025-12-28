@@ -354,32 +354,45 @@ def test_generator_h_repeat():
 
 def test_generator_rq_encoding():
     # RaptorQ as pre-boundary encoding
-    gen = PDUGenerator(src_callsign="F4JXQ", encodings=["rq(10, 2)"])
     data = b"RaptorQ pre-boundary test"
+    mtu = len(data)
+    repair_count = 2
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=[f"rq({len(data)}, {mtu}, {repair_count}),h"])
     pdus = list(gen.generate(data))
     
-    assert len(pdus) == 1
+    assert len(pdus) == 3
     header, payload = unpack(pdus[0])
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == "rq(10, 2)"
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == f"rq({len(data)}, {mtu}, {repair_count}),h"
+
+    packets = []
+    for pdu in pdus:
+        _, payload = unpack(pdu)
+        packets.append(payload)
     
     from hqfbp import rq_decode
-    assert rq_decode(payload, 10, 2) == data
+    assert rq_decode(packets, len(data), mtu) == data
 
 def test_generator_rq_post_boundary():
     # RaptorQ as post-boundary encoding
-    gen = PDUGenerator(src_callsign="F4JXQ", encodings=["h", "rq(20, 5)"])
     data = b"RaptorQ post-boundary test data"
+    rq_len = 80 # must be greater than len(data) + CBOR header
+    mtu = rq_len
+    repair_count = 4
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=["h", f"rq({rq_len},{mtu},{repair_count})"])
+    
     pdus = list(gen.generate(data))
     
-    assert len(pdus) == 1
-    pdu = pdus[0]
+    assert mtu >= rq_len
+    assert len(pdus) == 1 + repair_count
     
     from hqfbp import rq_decode
-    pdu_decompressed = rq_decode(pdu, 20, 5)
+    pdu_decompressed = rq_decode(pdus, rq_len, mtu)
+    print(pdu_decompressed)
     header, payload = unpack(pdu_decompressed)
-    
-    assert payload == data
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [-1, "rq(20, 5)"]
+
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [-1, f"rq({rq_len},{mtu},{repair_count})"]
+    assert payload[:len(data)] == data
+
 def test_merge_headers_strips_chunk():
     from hqfbp import merge_headers
     h1 = {

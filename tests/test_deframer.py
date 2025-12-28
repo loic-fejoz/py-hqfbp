@@ -380,34 +380,28 @@ def test_deframer_rs_pre_boundary():
 def test_deframer_rq_post_boundary():
     deframer = Deframer()
     data = b"RaptorQ resilience test"
+    rq_len = len(data) + 33
+    mtu = 255
+    repair_count = 10
     
-    # 20 bytes MTU, 10 repair packets
     gen = PDUGenerator(
         src_callsign="RQ-POST",
-        encodings=["h", "rq(20, 10)"],
+        encodings=["h", f"rq({rq_len}, {mtu}, {repair_count})"],
         announcement_encodings=["identity"]
     )
     
     pdus = list(gen.generate(data))
     
     announcement_pdu = pdus[0]
-    data_pdu_orig = pdus[1]
-    
-    # Prepend 4 bytes length overhead, then 20+4=24 bytes per packet
-    length_overhead = data_pdu_orig[:4]
-    payload = data_pdu_orig[4:]
-    packet_size = 24
-    packets = [payload[i:i+packet_size] for i in range(0, len(payload), packet_size)]
-    
+
     # Lose some packets
-    if len(packets) > 5:
-        del packets[1]
-        del packets[3]
-    
-    corrupted_data_pdu = length_overhead + b"".join(packets)
+    if len(pdus) > 5:
+        del pdus[1]
+        del pdus[3]
     
     deframer.receive_bytes(announcement_pdu)
-    deframer.receive_bytes(corrupted_data_pdu)
+    for pdu in pdus:
+        deframer.receive_bytes(pdu)
     
     found = False
     while True:
@@ -421,13 +415,18 @@ def test_deframer_rq_post_boundary():
 def test_deframer_rq_pre_boundary():
     deframer = Deframer()
     data = b"RaptorQ content encoding test"
+    rq_len = len(data)
+    mtu = 220
+    repair_count = 3
     
     gen = PDUGenerator(
         src_callsign="RQ-PRE",
-        encodings=["rq(16, 4)"]
+        encodings=[f"rq({rq_len}, {mtu}, {repair_count})"]
     )
     
     pdus = list(gen.generate(data))
+    assert len(pdus) == repair_count + 1
+    
     for pdu in pdus:
         deframer.receive_bytes(pdu)
         

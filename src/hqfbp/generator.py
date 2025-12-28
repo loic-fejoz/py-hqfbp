@@ -58,7 +58,7 @@ class PDUGenerator:
         self._next_msg_id += 1
         return msg_id
 
-    def _apply_encodings(self, data: bytes, encodings: List[Union[str, int]]) -> bytes:
+    def _apply_encodings(self, data: bytes, encodings: List[Union[str, int]]) -> Union[bytes, List[bytes]]:
         """Apply a list of encodings to the data."""
         for enc in encodings:
             if enc in (1, "gzip"):
@@ -81,8 +81,8 @@ class PDUGenerator:
                 else:
                     m = RQ_RE.match(enc)
                     if m:
-                        mtu, repair_count = map(int, m.groups())
-                        data = rq_encode(data, mtu, repair_count)
+                        data_len, mtu, repair_count = map(int, m.groups())
+                        data = rq_encode(data, data_len, mtu, repair_count)
             # Add other encodings here (deflate, etc.) if needed
         return data
 
@@ -237,7 +237,14 @@ class PDUGenerator:
                 current_chunks = new_chunks
             else:
                 # Transformation
-                current_chunks = [self._apply_encodings(c, [enc]) for c in current_chunks]
+                new_chunks = []
+                for c in current_chunks:
+                    chunks = self._apply_encodings(c, [enc])
+                    if isinstance(chunks, bytes):
+                        new_chunks.append(chunks)
+                    else:
+                        new_chunks.extend(chunks)
+                current_chunks = new_chunks
 
         # Yield Announcement if requested
         if self.announcement_encoder:
