@@ -1,0 +1,4 @@
+[callsigns.F4CALL]
+encodings="gzip,h,crc32"
+announcement_encodings="h,crc32,repeat(3)"
+last_msg_id=11

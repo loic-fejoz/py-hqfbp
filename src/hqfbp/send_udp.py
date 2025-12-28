@@ -4,6 +4,8 @@ import mimetypes
 import os
 import sys
 import re
+import tomllib
+import tomlkit
 from hqfbp.generator import PDUGenerator
 
 def main():
@@ -15,9 +17,25 @@ def main():
     parser.add_argument("--encodings", help="Comma-separated list of encodings (e.g., 'gzip,h,crc32')")
     parser.add_argument("--announcement-encodings", help="Comma-separated list of announcement encodings")
     parser.add_argument("--max-payload-size", type=int, help="Maximum payload size for chunking")
-    parser.add_argument("--msg-id", type=int, default=1, help="Starting message ID")
+    parser.add_argument("--msg-id", type=int, help="Starting message ID")
+    parser.add_argument("--config", help="Path to TOML configuration file")
 
     args = parser.parse_args()
+
+    # Load config if present
+    config_data = {}
+    if args.config and os.path.exists(args.config):
+        with open(args.config, "rb") as f:
+            config_data = tomllib.load(f)
+
+    # Resolve parameters: CLI > Config > Default
+    callsign = args.src_callsign
+    callsign_config = config_data.get("callsigns", {}).get(callsign, {})
+
+    encodings_str = args.encodings or callsign_config.get("encodings")
+    ann_encodings_str = args.announcement_encodings or callsign_config.get("announcement_encodings")
+    max_payload_size = args.max_payload_size or callsign_config.get("max_payload_size")
+    starting_msg_id = args.msg_id or callsign_config.get("last_msg_id", 1)
 
     if not os.path.isfile(args.filepath):
         print(f"Error: File not found: {args.filepath}", file=sys.stderr)
@@ -35,8 +53,8 @@ def main():
         return [part.strip() for part in re.split(r",(?![^\(]*\))", s)]
 
     # Parse encodings
-    encodings = parse_encs(args.encodings)
-    ann_encs = parse_encs(args.announcement_encodings)
+    encodings = parse_encs(encodings_str)
+    ann_encs = parse_encs(ann_encodings_str)
 
     # Read data
     with open(args.filepath, "rb") as f:
@@ -44,11 +62,11 @@ def main():
 
     # Initialize generator
     generator = PDUGenerator(
-        src_callsign=args.src_callsign,
-        max_payload_size=args.max_payload_size,
+        src_callsign=callsign,
+        max_payload_size=max_payload_size,
         encodings=encodings,
         announcement_encodings=ann_encs,
-        initial_msg_id=args.msg_id
+        initial_msg_id=starting_msg_id
     )
 
     # Setup UDP socket
@@ -62,6 +80,26 @@ def main():
             sock.sendto(pdu, (args.ip, args.port))
             count += 1
         print(f"Successfully sent {count} PDUs of {args.filepath} to {args.ip}:{args.port}")
+
+        # Update and save config
+        if args.config:
+            # Use tomlkit to preserve comments/formatting
+            if os.path.exists(args.config):
+                with open(args.config, "r") as f:
+                    doc = tomlkit.load(f)
+            else:
+                doc = tomlkit.document()
+
+            if "callsigns" not in doc:
+                doc["callsigns"] = tomlkit.table()
+            
+            if callsign not in doc["callsigns"]:
+                doc["callsigns"][callsign] = tomlkit.table()
+            
+            doc["callsigns"][callsign]["last_msg_id"] = generator._next_msg_id
+            
+            with open(args.config, "w") as f:
+                f.write(tomlkit.dumps(doc))
     finally:
         sock.close()
 

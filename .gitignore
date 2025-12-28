@@ -216,3 +216,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# config files
+send_config.toml

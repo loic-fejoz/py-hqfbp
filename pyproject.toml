@@ -12,6 +12,7 @@ dependencies = [
     "cbor2>=5.7.1",
     "reedsolo>=1.7.0",
     "raptorq>=0.1.0",
+    "tomlkit>=0.13.2",
 ]
 
 [project.scripts]
