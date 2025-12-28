@@ -438,3 +438,33 @@ def test_deframer_rq_pre_boundary():
             assert ev.payload == data
             found = True
     assert found
+
+
+def test_deframer_rq_post_boundary_pdu():
+    deframer = Deframer()
+    data = b"RaptorQ content encoding/decoding test post-boundary"
+    mtu = 15
+    repair_count = 3
+    
+    gen = PDUGenerator(
+        src_callsign="RQ-POST",
+        encodings=["h", f"rq(dlen,{mtu},{repair_count})"],
+        announcement_encodings=["identity"],
+    )
+    
+    pdus = list(gen.generate(data))
+    assert len(pdus) == 10
+    
+    for pdu in pdus:
+        deframer.receive_bytes(pdu)
+        
+    found = False
+    while True:
+        ev = deframer.next_event()
+        if ev is None: break
+        if isinstance(ev, PDUEvent):
+            print(ev)
+        elif isinstance(ev, MessageEvent):
+            assert ev.payload == data
+            found = True
+    assert found

@@ -49,6 +49,7 @@ class Deframer:
         self._sessions: Dict[Tuple[Optional[str], int], Dict[str, Any]] = {}
         # Mapping (src_callsign, upcoming_msg_id) -> encodings
         self._announcements: Dict[Tuple[Optional[str], int], List[Union[int, str]]] = {}
+        self._not_yet_decoded_pdus: List[bytes] = []
 
     def receive_bytes(self, data: bytes):
         """Accept raw PDU bytes and process them into events."""
@@ -93,19 +94,27 @@ class Deframer:
             # 2. Heuristic: Try unique sequences from announcements
             for announcement_encodings in self._announcements.values():
                 if announcement_encodings is not None:
+                    # Try to unpack with announcement encodings
+
+                    if self._raptorq_is_post_boundary(announcement_encodings):
+                        # Post-boundary RaptorQ requires all not yet decoded data
+                        try_data = b"".join(self._not_yet_decoded_pdus) + data
+                    else:
+                        try_data = data
                     try:
-                        data = self._strip_post_boundary_encodings(data, announcement_encodings)
-                        header, payload = unpack(data)
+                        try_data = self._strip_post_boundary_encodings(try_data, announcement_encodings)
+                        header, payload = unpack(try_data)
                         src_callsign = header.get(HQFBP_CBOR_KEYS["Src-Callsign"])
                         msg_id = header.get(HQFBP_CBOR_KEYS["Message-Id"])
                         if msg_id is not None:
-                            data = data
+                            data = try_data
                             encodings = announcement_encodings
                             break
                     except Exception:
                         continue
 
         if header is None or msg_id is None:
+            self._not_yet_decoded_pdus.append(data)
             return
 
         # 4. Handle Announcement
@@ -194,7 +203,7 @@ class Deframer:
                     m = RQ_RE.match(enc)
                     if m:
                         rq_len, mtu, repair_count = map(int, m.groups())
-                        data = [data[i:i+mtu] for i in range(0, len(data), mtu)]
+                        data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
                         data = rq_decode(data, rq_len, mtu)
         return data
 
@@ -257,3 +266,23 @@ class Deframer:
                 pre_encs = encodings
 
         return self._apply_decoding_list(data, pre_encs, pre_boundary=True)
+
+    def _raptorq_is_post_boundary(self, encodings: Union[int, str, List[Union[int, str]]]) -> bool:
+        """Return True if encodings contains RaptorQ after the boundary marker."""
+        if not isinstance(encodings, list):
+            return False
+        try:
+            if -1 in encodings:
+                idx = encodings.index(-1)
+            elif "h" in encodings:
+                idx = encodings.index("h")
+            else:
+                return False
+            
+            post_encs = encodings[idx + 1:]
+            for enc in post_encs:
+                if isinstance(enc, str) and RQ_RE.match(enc):
+                    return True
+        except (ValueError, TypeError):
+            pass
+        return False

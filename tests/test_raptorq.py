@@ -57,7 +57,7 @@ def test_generator_deframer_rq_post_boundary():
         ev = deframer.next_event()
         if ev is None: break
         if isinstance(ev, MessageEvent):
-            assert ev.payload[:len(data)] == data
+            assert ev.payload.startswith(data)
             found = True
     assert found, "Message not deframed"
 

@@ -148,17 +148,6 @@ class PDUGenerator:
                 return encs[:i], encs[i+1:], True
         return encs, [], False
 
-    def _split_encodings(self) -> Tuple[List[Union[str, int]], List[Union[str, int]]]:
-        """Split encodings into pre-boundary and post-boundary."""
-        resolved = self._resolve_encodings()
-        pre, post, _ = self._parse_encodings(resolved)
-        return pre, post
-
-    def _split_announcement_encodings(self) -> List[Union[str, int]]:
-        """Return the post-boundary encodings for the announcement PDU."""
-        pre, post, found = self._parse_encodings(self.announcement_encodings)
-        return post if found else pre
-
     def generate(self, data: bytes, content_type: Optional[str] = None) -> Generator[bytes, None, None]:
         """
         Generate HQFBP PDUs for the given data using an iterative approach.
@@ -187,7 +176,7 @@ class PDUGenerator:
         if content_type:
             header_template[HQFBP_CBOR_KEYS['Content-Type']] = content_type
 
-        for enc in full_encs:
+        for enc_idx, enc in enumerate(full_encs):
             if enc in (-1, "h"):
                 # Boundary marker: Pack everything into PDUs
                 total_chunks = len(current_chunks)
@@ -239,6 +228,10 @@ class PDUGenerator:
                 # Transformation
                 new_chunks = []
                 for c in current_chunks:
+                    if enc.startswith("rq(dlen,"):
+                        enc = enc.replace("rq(dlen,", "rq(" + str(int(len(c))) + ",")
+                        full_encs[enc_idx] = enc
+                        header_template[HQFBP_CBOR_KEYS['Content-Encoding']] = self._clean_encodings(full_encs)
                     chunks = self._apply_encodings(c, [enc])
                     if isinstance(chunks, bytes):
                         new_chunks.append(chunks)

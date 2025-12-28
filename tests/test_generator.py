@@ -372,6 +372,26 @@ def test_generator_rq_encoding():
     from hqfbp import rq_decode
     assert rq_decode(packets, len(data), mtu) == data
 
+def test_generator_rq_encoding_with_autolen():
+    # RaptorQ as pre-boundary encoding
+    data = b"RaptorQ pre-boundary test with computed length"
+    mtu=100
+    repair_count = 2
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=[f"rq(dlen,{mtu},{repair_count}),h"])
+    pdus = list(gen.generate(data))
+    
+    assert len(pdus) == 3
+    header, payload = unpack(pdus[0])
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == f"rq({len(data)},{mtu},{repair_count}),h"
+
+    packets = []
+    for pdu in pdus:
+        _, payload = unpack(pdu)
+        packets.append(payload)
+    
+    from hqfbp import rq_decode
+    assert rq_decode(packets, len(data), mtu) == data
+
 def test_generator_rq_post_boundary():
     # RaptorQ as post-boundary encoding
     data = b"RaptorQ post-boundary test data"
@@ -391,7 +411,31 @@ def test_generator_rq_post_boundary():
     header, payload = unpack(pdu_decompressed)
 
     assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [-1, f"rq({rq_len},{mtu},{repair_count})"]
-    assert payload[:len(data)] == data
+    assert payload.startswith(data) # because of potential padding
+
+def test_generator_rq_post_boundary_autolen():
+    # RaptorQ as post-boundary encoding
+    data = b"RaptorQ post-boundary test data with auto computed length"
+    mtu = 220
+    repair_count = 4
+    rq_len=88 #len(data) + len(CBOR header)
+    gen = PDUGenerator(
+        src_callsign="F4JXQ",
+        encodings=["h", f"rq(dlen,{mtu},{repair_count})"])
+    
+    pdus = list(gen.generate(data))
+
+    assert len(pdus) > repair_count
+    
+    from hqfbp import rq_decode
+    pdu_decompressed = rq_decode(pdus, rq_len, mtu)
+
+    header, payload = unpack(pdu_decompressed)
+
+    # dlen was not yet computed when header was packed
+    # This is why announcement should be mandatory
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [-1, f"rq(dlen,{mtu},{repair_count})"]
+    assert payload.startswith(data) # because of potential padding
 
 def test_merge_headers_strips_chunk():
     from hqfbp import merge_headers

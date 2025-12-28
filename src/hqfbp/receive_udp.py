@@ -41,6 +41,7 @@ def main():
             data, addr = sock.recvfrom(4096)
             try:
                 deframer.receive_bytes(data)
+                print(".", end="", flush=True)
             except Exception as e:
                 print(f"Error processing PDU from {addr}: {e}", file=sys.stderr)
                 continue

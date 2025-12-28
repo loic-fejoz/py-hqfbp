@@ -115,15 +115,14 @@ def simulate(ber: float, encodings: str, ann_encodings: Optional[str], file_size
     metrics = SimulationMetrics()
     
     # Simple data for simulation
-    source_data = bytes([random.getrandbits(8) for _ in range(file_size)])
+    source_data = random.randbytes(file_size)
     
     for _ in range(limit):
         metrics.files_attempted += 1
         gen = PDUGenerator(
             src_callsign="SIMUL",
             encodings=encodings,
-            announcement_encodings=ann_encodings,
-            max_payload_size=255
+            announcement_encodings=ann_encodings
         )
         
         # 1. Generate clean PDUs and extract their expected payloads using a clean deframer
@@ -164,7 +163,7 @@ def simulate(ber: float, encodings: str, ann_encodings: Optional[str], file_size
                         pdu_accepted = True
                         metrics.add_residual_errors(expected_payload, ev.payload)
                     elif isinstance(ev, MessageEvent):
-                        if ev.payload == source_data:
+                        if ev.payload.startswith(source_data): # Because some padding may have been added.
                             recovered = True
                 
                 metrics.add_pdu(clean_pdu, lost=not pdu_accepted)

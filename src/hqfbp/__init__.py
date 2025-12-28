@@ -147,7 +147,10 @@ def rq_decode(data: List[bytes], original_count: int, mtu: int) -> bytes:
 
     decoder = raptorq.Decoder.with_defaults(original_count, mtu)
     for packet in data:
-        res = decoder.decode(packet)
+        try:
+            res = decoder.decode(packet)
+        except:
+            raise ValueError(f"RaptorQ decoding failed: insufficient buffer size ({len(packet)}) or other errors")
         if res:
             return bytes(res)
             
