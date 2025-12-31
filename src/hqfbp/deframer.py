@@ -16,6 +16,8 @@ from hqfbp import (
     rs_decode,
     RQ_RE,
     rq_decode,
+    CONV_RE,
+    conv_decode,
     CHUNK_RE
 )
 import re
@@ -224,6 +226,12 @@ class Deframer:
                         if not isinstance(data, list):
                             data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
                         data = rq_decode(data, rq_len, mtu)
+                    else:
+                        m = CONV_RE.match(enc)
+                        if m:
+                            k, rate = m.groups()
+                            if isinstance(data, list): data = b"".join(data)
+                            data = conv_decode(data, int(k), rate)
         return data
 
     def _strip_post_boundary_encodings(self, data: bytes, encodings: Union[int, str, List[Union[int, str]]]) -> bytes:

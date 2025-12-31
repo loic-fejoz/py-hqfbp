@@ -86,6 +86,7 @@ _REV_ENCODING_REGISTRY = {v: k for k, v in ENCODING_REGISTRY.items()}
 
 RS_RE = re.compile(r"rs\((\d+),\s*(\d+)\)")
 RQ_RE = re.compile(r"rq\((\d+),\s*(\d+),\s*(\d+)\)")
+CONV_RE = re.compile(r"conv\((\d+),\s*(\d+/\d+)\)")
 CHUNK_RE = re.compile(r"chunk\((\d+)\)")
 REPEAT_RE = re.compile(r"repeat\((\d+)\)")
 
@@ -155,6 +156,142 @@ def rq_decode(data: List[bytes], original_count: int, mtu: int) -> bytes:
             return bytes(res)
             
     raise ValueError("RaptorQ decoding failed: insufficient symbols")
+
+def conv_encode(data: bytes, k: int = 7, rate: str = "1/2") -> bytes:
+    """
+    Convolutional encoding (hardcoded to NASA polynomials for K=7, R=1/2).
+    G1 = 133 (oct), G2 = 171 (oct)
+    """
+    if k != 7 or rate != "1/2":
+        raise ValueError(f"Only conv(7, 1/2) is currently supported, got conv({k}, {rate})")
+    
+    # NASA polynomials
+    g1 = 0o133
+    g2 = 0o171
+    
+    state = 0
+    bits = []
+    
+    # Convert bytes to bits and add K-1 zeros to flush
+    input_bits = []
+    for b in data:
+        for i in range(7, -1, -1):
+            input_bits.append((b >> i) & 1)
+    for _ in range(k - 1):
+        input_bits.append(0)
+        
+    for bit in input_bits:
+        state = (state << 1) | bit
+        # K=7 means state has 7 bits. We use 1 parity bit + 6 shift register bits
+        # But we can just use the state directly against the polynomial
+        
+        p1 = 0
+        p2 = 0
+        for i in range(k):
+            if (g1 >> i) & 1:
+                p1 ^= (state >> i) & 1
+            if (g2 >> i) & 1:
+                p2 ^= (state >> i) & 1
+        
+        bits.append(p1)
+        bits.append(p2)
+        state &= 0x3F # Keep only 6 bits for next iteration (constraint length 7 needs 6 bits of memory)
+        
+    # Convert bits back to bytes
+    res = bytearray()
+    for i in range(0, len(bits), 8):
+        byte_val = 0
+        chunk = bits[i:i+8]
+        for idx, b in enumerate(chunk):
+            byte_val |= (b << (7 - idx))
+        res.append(byte_val)
+    return bytes(res)
+
+def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> bytes:
+    """
+    Viterbi decoding for conv(7, 1/2) with NASA polynomials.
+    """
+    if k != 7 or rate != "1/2":
+        raise ValueError(f"Only conv(7, 1/2) is currently supported")
+
+    g1 = 0o133
+    g2 = 0o171
+    num_states = 1 << (k - 1) # 64 states
+    
+    # Pre-calculate state transitions and outputs
+    # transitions[state][input_bit] = (next_state, p1, p2)
+    transitions = []
+    for s in range(num_states):
+        t = []
+        for bit in [0, 1]:
+            new_full_state = (s << 1) | bit
+            p1 = 0
+            p2 = 0
+            for i in range(k):
+                if (g1 >> i) & 1:
+                    p1 ^= (new_full_state >> i) & 1
+                if (g2 >> i) & 1:
+                    p2 ^= (new_full_state >> i) & 1
+            t.append((new_full_state & (num_states - 1), p1, p2))
+        transitions.append(t)
+
+    # Viterbi state
+    metrics = [float('inf')] * num_states
+    metrics[0] = 0
+    paths = [bytearray() for _ in range(num_states)]
+    
+    # Extract bits from data
+    input_bits = []
+    for b in data:
+        for i in range(7, -1, -1):
+            input_bits.append((b >> i) & 1)
+            
+    # Process pairs of bits (Rate 1/2)
+    for i in range(0, len(input_bits) - 1, 2):
+        r1 = input_bits[i]
+        r2 = input_bits[i+1]
+        
+        new_metrics = [float('inf')] * num_states
+        new_paths = [None] * num_states
+        
+        for s in range(num_states):
+            if metrics[s] == float('inf'):
+                continue
+            
+            for bit in [0, 1]:
+                next_s, p1, p2 = transitions[s][bit]
+                dist = (r1 ^ p1) + (r2 ^ p2)
+                new_dist = metrics[s] + dist
+                
+                if new_dist < new_metrics[next_s]:
+                    new_metrics[next_s] = new_dist
+                    new_paths[next_s] = paths[s] + bytearray([bit])
+        
+        metrics = new_metrics
+        paths = new_paths
+
+    # Pick the best path (should end at state 0 because of the flush)
+    best_state = 0
+    min_m = metrics[0]
+    for s in range(num_states):
+        if metrics[s] < min_m:
+            min_m = metrics[s]
+            best_state = s
+            
+    decoded_bits = paths[best_state]
+    # Remove the K-1 flush bits
+    decoded_bits = decoded_bits[:-(k-1)]
+    
+    # Convert back to bytes
+    res = bytearray()
+    for i in range(0, len(decoded_bits), 8):
+        byte_val = 0
+        chunk = decoded_bits[i:i+8]
+        if len(chunk) < 8: break # Should be multiple of 8
+        for idx, b in enumerate(chunk):
+            byte_val |= (b << (7 - idx))
+        res.append(byte_val)
+    return bytes(res)
 
 def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
     """
