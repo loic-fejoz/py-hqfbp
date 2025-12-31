@@ -3,7 +3,7 @@ import lzma
 import brotli
 import cbor2
 from typing import Dict, Any, Optional, List, Union, Generator, Tuple
-from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode, CONV_RE, conv_encode, CHUNK_RE, REPEAT_RE
+from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode, CONV_RE, conv_encode, SCR_RE, scr_xor, CHUNK_RE, REPEAT_RE
 import re
 
 
@@ -88,6 +88,12 @@ class PDUGenerator:
                         if m:
                             k, rate = m.groups()
                             data = conv_encode(data, int(k), rate)
+                        else:
+                            m = SCR_RE.match(enc)
+                            if m:
+                                poly_str = m.group(1)
+                                poly = int(poly_str, 0) # Handles 0x and decimal
+                                data = scr_xor(data, poly)
             # Add other encodings here (deflate, etc.) if needed
         return data
 

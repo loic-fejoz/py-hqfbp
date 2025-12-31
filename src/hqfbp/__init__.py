@@ -87,6 +87,7 @@ _REV_ENCODING_REGISTRY = {v: k for k, v in ENCODING_REGISTRY.items()}
 RS_RE = re.compile(r"rs\((\d+),\s*(\d+)\)")
 RQ_RE = re.compile(r"rq\((\d+),\s*(\d+),\s*(\d+)\)")
 CONV_RE = re.compile(r"conv\((\d+),\s*(\d+/\d+)\)")
+SCR_RE = re.compile(r"scr\((0x[0-9a-fA-F]+|\d+)\)")
 CHUNK_RE = re.compile(r"chunk\((\d+)\)")
 REPEAT_RE = re.compile(r"repeat\((\d+)\)")
 
@@ -291,6 +292,53 @@ def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> bytes:
         for idx, b in enumerate(chunk):
             byte_val |= (b << (7 - idx))
         res.append(byte_val)
+    return bytes(res)
+
+def scr_xor(data: bytes, poly_mask: int) -> bytes:
+    """
+    Additive scrambler using an LFSR.
+    Since it's XOR-based, scrambling and descrambling are the same operation.
+    
+    Args:
+        data: Input bytes.
+        poly_mask: LFSR feedback polynomial.
+        
+    Returns:
+        bytes: Scrambled/descrambled result.
+    """
+    if poly_mask == 0:
+        return data
+        
+    # Determine LFSR width from polynomial
+    width = poly_mask.bit_length()
+    mask = (1 << width) - 1
+    
+    # Use a fixed seed for repeatability
+    state = mask
+    
+    res = bytearray()
+    for b in data:
+        out_byte = 0
+        for i in range(8):
+            # Feedback bit (usually XOR of bits at tap positions)
+            # Standard additive scrambler: feedback = parity(state & poly)
+            feedback = 0
+            temp = state & poly_mask
+            while temp:
+                feedback ^= (temp & 1)
+                temp >>= 1
+                
+            # Most scramblers output one of the state bits
+            # We'll output the feedback bit to simplify
+            bit = (b >> (7 - i)) & 1
+            scr_bit = bit ^ feedback
+            out_byte = (out_byte << 1) | scr_bit
+            
+            # Shift LFSR
+            state = ((state << 1) | feedback) & mask
+            if state == 0: state = mask # Avoid zero lockup
+            
+        res.append(out_byte)
     return bytes(res)
 
 def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
