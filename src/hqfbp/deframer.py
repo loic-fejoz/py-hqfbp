@@ -158,8 +158,21 @@ class Deframer:
         session['headers'].append(header)
 
         # 6. Check for Completion
+        completed = False
         if len(session['chunks']) == session['total_chunks']:
-            self._complete_message(session_key)
+            completed = self._complete_message(session_key)
+        else:
+            # Early decoding attempt for RaptorQ
+            rq_info = self._get_rq_info(session['headers'])
+            if rq_info:
+                rq_len, mtu, repair_count = rq_info
+                # Minimum symbols required is ceil(rq_len / mtu)
+                import math
+                k = math.ceil(rq_len / mtu)
+                if len(session['chunks']) >= k:
+                    completed = self._complete_message(session_key)
+        
+        if completed:
             # Cleanup announcement
             self._announcements.pop((src_callsign, msg_id), None)
             # And also potentially the Original-Message-Id association if any
@@ -181,29 +194,35 @@ class Deframer:
         except Exception:
             pass
 
-    def _apply_decoding_list(self, data: bytes, encodings: List[Union[int, str]], pre_boundary: bool) -> bytes:
+    def _apply_decoding_list(self, data: Union[bytes, List[bytes]], encodings: List[Union[int, str]], pre_boundary: bool) -> Union[bytes, List[bytes]]:
         """Apply a list of decodings in reverse order (LIFO)."""
         for enc in reversed(encodings):
             if enc in (1, "gzip"):
+                if isinstance(data, list): data = b"".join(data)
                 data = gzip.decompress(data)
             elif enc in (3, "br"):
+                if isinstance(data, list): data = b"".join(data)
                 data = brotli.decompress(data)
             elif enc in (4, "lzma"):
+                if isinstance(data, list): data = b"".join(data)
                 data = lzma.decompress(data)
             elif enc in (5, 6, "crc16", "crc32"):
+                if isinstance(data, list): data = b"".join(data)
                 data = verify_and_strip_crc(data, enc)
             elif isinstance(enc, str):
                 if CHUNK_RE.match(enc):
                     continue
                 m = RS_RE.match(enc)
                 if m:
+                    if isinstance(data, list): data = b"".join(data)
                     n, k = map(int, m.groups())
                     data = rs_decode(data, n, k)
                 else:
                     m = RQ_RE.match(enc)
                     if m:
                         rq_len, mtu, repair_count = map(int, m.groups())
-                        data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
+                        if not isinstance(data, list):
+                            data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
                         data = rq_decode(data, rq_len, mtu)
         return data
 
@@ -231,24 +250,61 @@ class Deframer:
         return self._apply_decoding_list(data, post_encs, pre_boundary=False)
 
 
-    def _complete_message(self, session_key: Tuple[Optional[str], int]):
+    def _complete_message(self, session_key: Tuple[Optional[str], int]) -> bool:
         """Assemble chunks, merge headers, and dekrunk pre-boundary encodings."""
-        session = self._sessions.pop(session_key)
+        session = self._sessions[session_key]
         
-        # Concatenate chunks in order
-        full_payload = b"".join(session['chunks'][i] for i in range(session['total_chunks']))
+        # Prepare chunks for decoding
+        # We use a list of bytes if any encoding (like RQ) requires it, or just join them
+        total_possible = session['total_chunks']
+        chunks = [session['chunks'].get(i) for i in range(total_possible)]
         
+        # If we have all chunks, we can join them right away if no special decoding needed
+        # but let's keep them as a list for _apply_pre_boundary_decodings to handle.
+        # However, many decoders expect bytes.
+        available_chunks = [c for c in chunks if c is not None]
+
         # Merge headers
         merged_header = merge_headers(session['headers'])
         
         # Apply pre-boundary decodings
         encodings = merged_header.get(HQFBP_CBOR_KEYS["Content-Encoding"])
-        if encodings:
-            full_payload = self._apply_pre_boundary_decodings(full_payload, encodings)
-        if isinstance(full_payload, list):
-            full_payload = b"".join(full_payload)
+        try:
+            full_payload = available_chunks
+            if encodings:
+                full_payload = self._apply_pre_boundary_decodings(available_chunks, encodings)
+            
+            if isinstance(full_payload, list):
+                full_payload = b"".join(full_payload)
 
-        self._events.append(MessageEvent(merged_header, full_payload))
+            self._events.append(MessageEvent(merged_header, full_payload))
+            # Actually remove session only on success
+            self._sessions.pop(session_key)
+            return True
+        except ValueError:
+            # Decoding failed (e.g. not enough symbols for RQ)
+            # Stay in reassembly
+            return False
+
+    def _get_rq_info(self, headers: List[Dict[int, Any]]) -> Optional[Tuple[int, int, int]]:
+        """Extract RaptorQ parameters from headers if present in Content-Encoding."""
+        for h in headers:
+            ce = h.get(HQFBP_CBOR_KEYS["Content-Encoding"])
+            if not ce: continue
+            
+            encs = []
+            if isinstance(ce, list): encs = ce
+            else: encs = [ce]
+            
+            for enc in encs:
+                if isinstance(enc, str):
+                    # We only care about pre-boundary RQ for early decoding of message
+                    # (boundary marker check is done in _apply_pre...)
+                    # but actually we can check both.
+                    m = RQ_RE.match(enc)
+                    if m:
+                        return tuple(map(int, m.groups()))
+        return None
 
     def _apply_pre_boundary_decodings(self, data: List[bytes], encodings: Union[int, str, List[Union[int, str]]]) -> List[bytes]:
         """Decompress/decode data based on pre-boundary encodings."""
