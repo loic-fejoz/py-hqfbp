@@ -13,21 +13,18 @@ class BitErrorChannel:
     def __init__(self, ber: float):
         self.ber = ber
 
-    def process(self, data: bytes) -> bytes:
+    def process(self, data: bytes) -> tuple[bytes, int]:
         if self.ber <= 0:
-            return data
+            return data, 0
         
         ba = bytearray(data)
+        errors = 0
         for i in range(len(ba)):
-            # Quick check if any bit in byte might flip
-            # Probability that AT LEAST one bit flips in a byte: 1 - (1-ber)^8
-            byte_error_prob = 1 - (1 - self.ber) ** 8
-            if random.random() < byte_error_prob:
-                # One or more bits flip. Flip each bit individually.
-                for bit in range(8):
-                    if random.random() < self.ber:
-                        ba[i] ^= (1 << bit)
-        return bytes(ba)
+            for bit in range(8):
+                if random.random() < self.ber:
+                    ba[i] ^= (1 << bit)
+                    errors += 1
+        return bytes(ba), errors
 
 class SimulationMetrics:
     def __init__(self):
@@ -44,11 +41,14 @@ class SimulationMetrics:
         self.total_bit_errors_introduced = 0
         self.total_residual_bit_errors = 0
         self.total_bits_evaluated = 0
+        self.total_bits_on_air = 0
 
-    def add_pdu(self, pdu_bytes: bytes, lost: bool):
+    def add_pdu(self, pdu_bytes: bytes, lost: bool, errors_in_pdu: int = 0):
         self.total_pdus_sent += 1
         bits = len(pdu_bytes) * 8
         self.total_bits_sent += bits
+        self.total_bits_on_air += bits
+        self.total_bit_errors_introduced += errors_in_pdu
         
         if lost:
             self.pdus_lost += 1
@@ -74,11 +74,14 @@ class SimulationMetrics:
         overhead = ((self.header_bits + self.padding_bits) / self.total_bits_sent * 100) if self.total_bits_sent > 0 else 0
         fec_recovery = (self.files_recovered / self.files_attempted * 100) if self.files_attempted > 0 else 0
         rber = (self.total_residual_bit_errors / self.total_bits_evaluated) if self.total_bits_evaluated > 0 else 0
+        air_ber = (self.total_bit_errors_introduced / self.total_bits_on_air) if self.total_bits_on_air > 0 else 0
 
         data = {
             "Total Bytes Sent": self.total_bits_sent // 8,
             "Packet Loss Rate (%)": round(packet_loss_rate, 2),
             "File Loss Rate (%)": round(file_loss_rate, 2),
+            "Bit Error Rate (on air)": f"{air_ber:.2e}",
+            "Bit Errors Introduced": self.total_bit_errors_introduced,
             "Residual Bit Error Rate": f"{rber:.2e}",
             "FEC Recovery Rate (%)": round(fec_recovery, 2),
             "Transmission Efficiency (%)": round(efficiency, 2),
@@ -148,7 +151,7 @@ def simulate(ber: float, encodings: str, ann_encodings: Optional[str], file_size
         recovered = False
         
         for clean_pdu, expected_payload in clean_pdus_info:
-            noisy_pdu = channel.process(clean_pdu)
+            noisy_pdu, errors_in_pdu = channel.process(clean_pdu)
             
             try:
                 noisy_deframer.receive_bytes(noisy_pdu)
@@ -166,10 +169,10 @@ def simulate(ber: float, encodings: str, ann_encodings: Optional[str], file_size
                         if ev.payload.startswith(source_data): # Because some padding may have been added.
                             recovered = True
                 
-                metrics.add_pdu(clean_pdu, lost=not pdu_accepted)
+                metrics.add_pdu(clean_pdu, lost=not pdu_accepted, errors_in_pdu=errors_in_pdu)
                     
             except Exception:
-                metrics.add_pdu(clean_pdu, lost=True)
+                metrics.add_pdu(clean_pdu, lost=True, errors_in_pdu=errors_in_pdu)
         
         if recovered:
             metrics.files_recovered += 1
