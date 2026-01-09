@@ -6,6 +6,7 @@ INPUT_FILE="test_payload.bin"
 KISS_FILE="output.kiss"
 OUTPUT_DIR="unpacked_output"
 FILE_SIZE=10240
+ENCODINGS=${1:-"gzip,h,crc32"}
 
 # Cleanup
 echo "Cleaning up..."
@@ -17,10 +18,10 @@ echo "Generating random payload ($FILE_SIZE bytes)..."
 dd if=/dev/urandom of="$INPUT_FILE" bs=1 count="$FILE_SIZE" status=none
 
 # Pack
-echo "Packing with pack.py..."
+echo "Packing with pack.py (encodings: $ENCODINGS)..."
 uv run python src/hqfbp/pack.py "$INPUT_FILE" 0.0.0.0 0 \
     --src-callsign "TEST-ROUNDTRIP" \
-    --encodings "gzip,h,crc32" \
+    --encodings "$ENCODINGS" \
     --output "$KISS_FILE"
 
 # Unpack
