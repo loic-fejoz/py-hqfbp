@@ -380,7 +380,7 @@ def test_deframer_rs_pre_boundary():
 def test_deframer_rq_post_boundary():
     deframer = Deframer()
     data = b"RaptorQ resilience test"
-    rq_len = len(data) + 33
+    rq_len = len(data) + 60 # Increased to accommodate larger PDU header
     mtu = 255
     repair_count = 10
     

@@ -12,7 +12,7 @@ def test_conv_roundtrip():
     # 428 bits = 53.5 bytes -> 54 bytes.
     assert len(encoded) >= len(data) * 2
     
-    decoded = conv_decode(encoded, k=7, rate="1/2")
+    decoded, _ = conv_decode(encoded, k=7, rate="1/2")
     assert decoded == data
 
 def test_conv_error_correction():
@@ -23,7 +23,7 @@ def test_conv_error_correction():
     # (Viterbi with K=7 is quite robust)
     encoded[5] ^= 0x01
     
-    decoded = conv_decode(bytes(encoded), k=7, rate="1/2")
+    decoded, _ = conv_decode(bytes(encoded), k=7, rate="1/2")
     assert decoded == data
 
 def test_conv_multiple_errors():
@@ -36,7 +36,7 @@ def test_conv_multiple_errors():
     encoded[10] ^= 0x02
     encoded[20] ^= 0x80
     
-    decoded = conv_decode(bytes(encoded), k=7, rate="1/2")
+    decoded, _ = conv_decode(bytes(encoded), k=7, rate="1/2")
     assert decoded == data
 
 def test_generator_deframer_conv_integration():

@@ -132,10 +132,9 @@ def test_pack_optimization():
     assert HQFBP_CBOR_KEYS['Content-Type'] not in h1
     assert h1[HQFBP_CBOR_KEYS['Content-Format']] == 23
     
-    # Test 2: Content-Encoding strings to IDs (strips trailing 'h')
     p2 = pack({HQFBP_CBOR_KEYS['Message-Id']: 2, "Content-Encoding": ["gzip", "h"]}, b"gzdata")
     h2, _ = unpack(p2)
-    assert h2[HQFBP_CBOR_KEYS['Content-Encoding']] == 1
+    assert h2[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1]
     
     # Test 3: Omit default Content-Format 0 / text/plain
     p3 = pack({HQFBP_CBOR_KEYS['Message-Id']: 3, "Content-Type": "text/plain;charset=utf-8"}, b"text")
@@ -151,25 +150,23 @@ def test_pack_optimization():
 def test_pack_trailing_h():
     from hqfbp import pack, unpack
     
-    # Test case 1: ["gzip", "h"] -> should be 1
     p1 = pack({HQFBP_CBOR_KEYS['Message-Id']: 1, "Content-Encoding": ["gzip", "h"]}, b"data")
     h1, _ = unpack(p1)
-    assert h1[HQFBP_CBOR_KEYS['Content-Encoding']] == 1
+    assert h1[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1]
     
-    # Test case 2: ["h"] -> should be removed
+    # Test case 2: ["h"] -> should be -1
     p2 = pack({HQFBP_CBOR_KEYS['Message-Id']: 2, "Content-Encoding": ["h"]}, b"data")
     h2, _ = unpack(p2)
-    assert HQFBP_CBOR_KEYS['Content-Encoding'] not in h2
+    assert h2[HQFBP_CBOR_KEYS['Content-Encoding']] == -1
     
     # Test case 3: ["gzip", "h", "crc32"] -> should remain [1, -1, 6]
     p3 = pack({HQFBP_CBOR_KEYS['Message-Id']: 3, "Content-Encoding": ["gzip", "h", "crc32"]}, b"data")
     h3, _ = unpack(p3)
     assert h3[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1, 6]
     
-    # Test case 4: multiple trailing h -> strip all
     p4 = pack({HQFBP_CBOR_KEYS['Message-Id']: 4, "Content-Encoding": ["gzip", "h", "h"]}, b"data")
     h4, _ = unpack(p4)
-    assert h4[HQFBP_CBOR_KEYS['Content-Encoding']] == 1
+    assert h4[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1, -1]
 
 def test_crc_helpers():
     from hqfbp import crc16_ccitt, crc32, verify_and_strip_crc
@@ -178,13 +175,13 @@ def test_crc_helpers():
     # Test CRC16
     c16 = crc16_ccitt(data)
     assert len(c16) == 2
-    assert verify_and_strip_crc(data + c16, "crc16") == data
+    assert verify_and_strip_crc(data + c16, "crc16") == (data, True)
     with pytest.raises(ValueError, match="verification failed"):
         verify_and_strip_crc(data + b"\x00\x00", "crc16")
         
     # Test CRC32
     c32 = crc32(data)
     assert len(c32) == 4
-    assert verify_and_strip_crc(data + c32, "crc32") == data
+    assert verify_and_strip_crc(data + c32, "crc32") == (data, True)
     with pytest.raises(ValueError, match="verification failed"):
         verify_and_strip_crc(data + b"\x00\x00\x00\x00", "crc32")

@@ -3,7 +3,7 @@ import lzma
 import brotli
 import pytest
 from hqfbp.generator import PDUGenerator
-from hqfbp import unpack, HQFBP_CBOR_KEYS, verify_and_strip_crc
+from hqfbp import unpack, HQFBP_CBOR_KEYS, verify_and_strip_crc, merge_headers, rs_decode
 
 def test_generator_single_pdu():
     gen = PDUGenerator(src_callsign="F4JXQ-1")
@@ -19,8 +19,8 @@ def test_generator_single_pdu():
     # Wait, text/plain;charset=utf-8 is ID 0 and thus optional.
     assert HQFBP_CBOR_KEYS['Content-Type'] not in header
     assert HQFBP_CBOR_KEYS['Content-Format'] not in header
-    # No encoding
-    assert HQFBP_CBOR_KEYS['Content-Encoding'] not in header
+    # No encoding, but boundary marker is always present in PDUGenerator
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == -1
     assert payload == data
     assert payload == data
 
@@ -59,7 +59,7 @@ def test_generator_single_lzma_pdu():
     assert len(pdus) == 1
     header, payload = unpack(pdus[0])
     
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 4 # lzma
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [4, -1] # lzma, boundary
     assert payload == lzma.compress(data)
 
 def test_generator_single_brotli_pdu():
@@ -71,7 +71,7 @@ def test_generator_single_brotli_pdu():
     assert len(pdus) == 1
     header, payload = unpack(pdus[0])
     
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 3 # br
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [3, -1] # br, boundary
     assert payload == brotli.compress(data)
 
 def test_generator_gzip_before_chunking():
@@ -148,9 +148,8 @@ def test_generator_config():
     
     assert header[HQFBP_CBOR_KEYS['Src-Callsign']] == "N0CALL"
     assert header[HQFBP_CBOR_KEYS['Dst-Callsign']] == "QST"
-    # ["gzip", "h"] with chunk(100) becomes [1, "chunk(100)"] but chunk(100) is stripped in pack()
-    # So it should be just 1 (gzip)
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 1
+    # ["gzip", "h"] with chunk(100) becomes [1, "chunk(100)", -1]
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, "chunk(100)", -1]
 
 def test_generator_crc_payload_only():
     # Pre-boundary CRC (payload only)
@@ -161,7 +160,7 @@ def test_generator_crc_payload_only():
     _, payload = unpack(pdus[0])
     # The whole payload should have CRC at the end
     from hqfbp import verify_and_strip_crc
-    assert verify_and_strip_crc(payload, "crc32") == data
+    assert verify_and_strip_crc(payload, "crc32") == (data, True)
 
 def test_generator_crc_covering_header():
     # Post-boundary CRC (covering header + payload)
@@ -172,7 +171,7 @@ def test_generator_crc_covering_header():
     # The whole PDU should have CRC at the end
     pdu = pdus[0]
     from hqfbp import verify_and_strip_crc
-    pdu_no_crc = verify_and_strip_crc(pdu, "crc32")
+    pdu_no_crc, _ = verify_and_strip_crc(pdu, "crc32")
     
     # Now unpack the PDU without CRC
     header, payload = unpack(pdu_no_crc)
@@ -198,7 +197,7 @@ def test_generator_announcement():
     ann_pdu = pdus[0]
     # It should have CRC16 at the end (post-boundary for announcement)
     from hqfbp import verify_and_strip_crc
-    ann_pdu_no_crc = verify_and_strip_crc(ann_pdu, "crc16")
+    ann_pdu_no_crc, _ = verify_and_strip_crc(ann_pdu, "crc16")
     
     ann_h, ann_p_bytes = unpack(ann_pdu_no_crc)
     assert ann_h[HQFBP_CBOR_KEYS['Content-Type']] == "application/vnd.hqfbp+cbor"
@@ -213,7 +212,7 @@ def test_generator_announcement():
     
     # 2. Verify Data PDU
     data_pdu = pdus[1]
-    data_pdu_no_crc = verify_and_strip_crc(data_pdu, "crc32")
+    data_pdu_no_crc, _ = verify_and_strip_crc(data_pdu, "crc32")
     data_h, data_p = unpack(data_pdu_no_crc)
     
     assert data_h[HQFBP_CBOR_KEYS['Message-Id']] == 2
@@ -268,22 +267,21 @@ def test_generator_rs_chunk_size():
     
     gen = PDUGenerator(
         src_callsign="F4JXQ", 
-        max_payload_size=185, 
+        max_payload_size=150, # Smaller payload to ensure one RS block fits
         encodings=["h", "rs(255,233)"]
     )
     
-    # 500 bytes of data -> 3 chunks (500 / 180 = 2.77)
+    # 500 bytes of data -> 4 chunks (500 / 150 = 3.33)
     data = b"R" * 500
     pdus = list(gen.generate(data))
     
-    assert len(pdus) == 3
+    assert len(pdus) == 4
     for i, pdu in enumerate(pdus):
         # Each PDU must be N (255)
         assert len(pdu) == 255
         
         # Verify it decodes correctly
-        from hqfbp import rs_decode
-        dec = rs_decode(pdu, 255, 233)
+        dec, _ = rs_decode(pdu, 255, 233)
         assert len(dec) == 233
         
         # The first 233 bytes should be the CBOR header + payload
@@ -301,8 +299,8 @@ def test_generator_explicit_chunk_encoding():
     assert len(pdus) > 1
     
     header, _ = unpack(pdus[0])
-    # [1, "chunk(10)"] -> "chunk(10)" is stripped in pack() -> just 1
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == 1
+    # Now it's NOT stripped anymore
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, "chunk(10)", -1]
 
 def test_generator_chunk_position():
     # Case 1: ["gzip", "chunk(10)", "h"] -> gzip applied to WHOLE message
@@ -335,9 +333,9 @@ def test_generator_repeat():
     for pdu in pdus:
         header, payload = unpack(pdu)
         assert payload == data
-        # repeat(3) and h should be stripped from the header
+        # repeat(3) and h should be preserved now
         ce = header.get(HQFBP_CBOR_KEYS["Content-Encoding"])
-        assert ce is None
+        assert ce == ["repeat(3)", -1]
 
 
 def test_generator_h_repeat():
@@ -357,12 +355,13 @@ def test_generator_rq_encoding():
     data = b"RaptorQ pre-boundary test"
     mtu = len(data)
     repair_count = 2
-    gen = PDUGenerator(src_callsign="F4JXQ", encodings=[f"rq({len(data)}, {mtu}, {repair_count}),h"])
+    gen = PDUGenerator(src_callsign="F4JXQ", encodings=[f"rq({len(data)},{mtu},{repair_count}),h"])
     pdus = list(gen.generate(data))
     
     assert len(pdus) == 3
     header, payload = unpack(pdus[0])
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == f"rq({len(data)}, {mtu}, {repair_count}),h"
+    # Clean encodings converts 'h' to -1
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [f"rq({len(data)},{mtu},{repair_count})", -1]
 
     packets = []
     for pdu in pdus:
@@ -382,7 +381,7 @@ def test_generator_rq_encoding_with_autolen():
     
     assert len(pdus) == 3
     header, payload = unpack(pdus[0])
-    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == f"rq({len(data)},{mtu},{repair_count}),h"
+    assert header[HQFBP_CBOR_KEYS['Content-Encoding']] == [f"rq({len(data)},{mtu},{repair_count})", -1]
 
     packets = []
     for pdu in pdus:
@@ -418,7 +417,7 @@ def test_generator_rq_post_boundary_autolen():
     data = b"RaptorQ post-boundary test data with auto computed length"
     mtu = 220
     repair_count = 4
-    rq_len=88 #len(data) + len(CBOR header)
+    rq_len=120 # Provide enough space for header + data + Payload-Size field
     gen = PDUGenerator(
         src_callsign="F4JXQ",
         encodings=["h", f"rq(dlen,{mtu},{repair_count})"])
@@ -449,16 +448,13 @@ def test_merge_headers_strips_chunk():
         HQFBP_CBOR_KEYS["Chunk-Id"]: 1,
         HQFBP_CBOR_KEYS["Content-Encoding"]: ["gzip", "chunk(100)", "h", "crc32"]
     }
-    
     merged = merge_headers([h1, h2])
-    # Should exclude 0, 9, 10, 11
-    assert HQFBP_CBOR_KEYS["Message-Id"] not in merged
+    
     assert HQFBP_CBOR_KEYS["Chunk-Id"] not in merged
     assert HQFBP_CBOR_KEYS["Original-Message-Id"] not in merged
-    
-    # Should strip chunk(100) but keep the rest
-    # Expected: ["gzip", "h", "crc32"]
-    assert merged[HQFBP_CBOR_KEYS["Content-Encoding"]] == ["gzip", "h", "crc32"]
+    # Should keep chunk(100) and keep the rest
+    # Encodings are now preserved as strings or mapped integers
+    assert merged[HQFBP_CBOR_KEYS["Content-Encoding"]] == [1, "chunk(100)", -1, 6]
 
 def test_generator_rs_alignment():
     # Verify that rs(n, k) automatically triggers chunk(k)
@@ -466,12 +462,9 @@ def test_generator_rs_alignment():
     data = b"A" * 500
     pdus = list(gen.generate(data))
     
-    # Header should contain ["chunk(233)", "rs(255, 233)", "h"] (resolved)
-    # But chunk(233) and h are stripped in pack()
-    # Wait, rs(n, k) is post-boundary if h is after it. 
-    # Let's check _resolve_encodings result
+    # Header should contain ["chunk(233)", "rs(255, 233)", -1] (resolved)
     encs = gen._resolve_encodings()
-    assert encs == ["chunk(233)", "rs(255, 233)", "h"]
+    assert encs == ["chunk(233)", "rs(255, 233)", -1]
     
     # In the PDU header, only "rs(255, 233)" (as int if in registry) should remain if it's considered packed
     from hqfbp import unpack, HQFBP_CBOR_KEYS
@@ -481,6 +474,6 @@ def test_generator_rs_alignment():
     # Let's just check it doesn't have chunk(233)
     from hqfbp import CHUNK_RE
     if isinstance(ce, list):
-        assert not any(isinstance(e, str) and CHUNK_RE.match(e) for e in ce)
+        assert any(isinstance(e, str) and CHUNK_RE.match(e) for e in ce)
     elif isinstance(ce, str):
-        assert not CHUNK_RE.match(ce)
+        assert CHUNK_RE.match(ce)

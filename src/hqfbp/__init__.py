@@ -29,6 +29,7 @@ HQFBP_CBOR_KEYS = {
     "Chunk-Id": 9,
     "Original-Message-Id": 10,
     "Total-Chunks": 11,
+    "Payload-Size": 12,
 }
 
 # Inverse mapping for easy lookup
@@ -102,17 +103,30 @@ def rs_encode(data: bytes, n: int, k: int) -> bytes:
         encoded.extend(rs.encode(chunk))
     return bytes(encoded)
 
-def rs_decode(data: bytes, n: int, k: int) -> bytes:
-    """Decode data using Reed-Solomon(n, k). Data should be multiple of n bytes."""
+def rs_decode(data: bytes, n: int, k: int) -> Tuple[bytes, int]:
+    """
+    Decode data using Reed-Solomon(n, k). Data should be multiple of n bytes.
+    Returns (decoded_data, total_errors_corrected).
+    """
     rs = reedsolo.RSCodec(n - k)
     decoded = bytearray()
+    total_errors = 0
     for i in range(0, len(data), n):
         chunk = data[i:i+n]
         if len(chunk) < n:
             chunk = chunk.ljust(n, b'\x00')
-        msg, _, _ = rs.decode(chunk)
-        decoded.extend(msg)
-    return bytes(decoded)
+        # rs.decode returns (decoded_msg, decoded_msgecc, err_ata_pos)
+        # but we need to know how many errors were corrected.
+        try:
+            msg, _, err_pos = rs.decode(chunk)
+            decoded.extend(msg)
+            total_errors += len(err_pos)
+        except reedsolo.ReedSolomonError:
+            # If we can't decode one block, the whole thing is failed for now
+            # but in Hybrid ARQ we might want to be more granular.
+            # For now, raise ValueError to match existing logic.
+            raise ValueError("Reed-Solomon decoding failed")
+    return bytes(decoded), total_errors
 
 def rq_encode(data: bytes, original_count: int, mtu: int, repair_count: int) -> bytes:
     """
@@ -208,9 +222,11 @@ def conv_encode(data: bytes, k: int = 7, rate: str = "1/2") -> bytes:
         res.append(byte_val)
     return bytes(res)
 
-def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> bytes:
+def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> Tuple[bytes, int]:
     """
     Viterbi decoding for conv(7, 1/2) with NASA polynomials.
+    Returns (decoded_data, min_path_metric).
+    Lower path metric means higher quality (fewer bit flips corrected).
     """
     if k != 7 or rate != "1/2":
         raise ValueError(f"Only conv(7, 1/2) is currently supported")
@@ -292,7 +308,7 @@ def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> bytes:
         for idx, b in enumerate(chunk):
             byte_val |= (b << (7 - idx))
         res.append(byte_val)
-    return bytes(res)
+    return bytes(res), int(min_m)
 
 def scr_xor(data: bytes, poly_mask: int) -> bytes:
     """
@@ -383,13 +399,7 @@ def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
     ce = cbor_header.get(5)
     if ce is not None:
         if isinstance(ce, list):
-            # Strip synthetic 'chunk(size)' and 'repeat(m)' markers
-            ce = [i for i in ce if not (isinstance(i, str) and (CHUNK_RE.match(i) or REPEAT_RE.match(i)))]
-            
             ce = [_REV_ENCODING_REGISTRY.get(i, i) if isinstance(i, str) else i for i in ce]
-            # Strip trailing boundary marker (-1 / "h") as per user request
-            while ce and ce[-1] == -1:
-                ce.pop()
             
             if not ce:
                 del cbor_header[5]
@@ -398,20 +408,17 @@ def pack(header: Dict[Union[int, str], Any], payload: bytes) -> bytes:
             else:
                 cbor_header[5] = ce
         elif isinstance(ce, str):
-            if CHUNK_RE.match(ce) or REPEAT_RE.match(ce):
-                del cbor_header[5]
-            else:
-                val = _REV_ENCODING_REGISTRY.get(ce, ce)
-                if val == -1: # "h" alone is redundant
-                    del cbor_header[5]
-                else:
-                    cbor_header[5] = val
-        elif ce == -1: # redundant
-            del cbor_header[5]
+            val = _REV_ENCODING_REGISTRY.get(ce, ce)
+            cbor_header[5] = val
+        elif ce == -1: # redundant but keep if specifically asked
+            cbor_header[5] = -1
 
     # Ensure Message-Id is present as per RFC (MANDATORY)
     if 0 not in cbor_header:
         raise ValueError("Message-Id (key 0) is mandatory in HQFBP header")
+    
+    # Update Payload-Size (key 12)
+    cbor_header[12] = len(payload)
         
     return cbor_2_dumps(cbor_header) + payload
 
@@ -428,6 +435,12 @@ def unpack(data: bytes) -> Tuple[Dict[int, Any], bytes]:
     fp = io.BytesIO(data)
     header = cbor2.load(fp)
     payload = fp.read()
+    
+    # Use Payload-Size (key 12) to trim padding added by FEC if present
+    payload_size = header.get(12)
+    if payload_size is not None:
+        payload = payload[:payload_size]
+        
     return header, payload
 
 def cbor_2_dumps(obj: Any) -> bytes:
@@ -468,18 +481,15 @@ def merge_headers(headers: list[Dict[int, Any]]) -> Dict[int, Any]:
     # Cleanup excluded keys from the merged result (they might have been in headers[0])
     for k in exclude_keys:
         merged.pop(k, None)
-
-    # Rule: Strip synthetic 'chunk(size)' encodings from the final result
-    ce = merged.get(5) # Content-Encoding
-    if ce is not None:
+    
+    # Standardize Content-Encoding (5) if present
+    ce_key = HQFBP_CBOR_KEYS["Content-Encoding"]
+    if ce_key in merged:
+        ce = merged[ce_key]
         if isinstance(ce, list):
-            new_ce = [e for e in ce if not (isinstance(e, str) and (CHUNK_RE.match(e) or REPEAT_RE.match(e)))]
-            if new_ce:
-                merged[5] = new_ce
-            else:
-                merged.pop(5)
-        elif isinstance(ce, str) and (CHUNK_RE.match(ce) or REPEAT_RE.match(ce)):
-            merged.pop(5)
+            merged[ce_key] = [_REV_ENCODING_REGISTRY.get(e, e) if isinstance(e, str) else e for e in ce]
+        elif isinstance(ce, str):
+            merged[ce_key] = _REV_ENCODING_REGISTRY.get(ce, ce)
 
     return merged
 
@@ -546,9 +556,9 @@ def crc32(data: bytes) -> bytes:
     """
     return struct.pack(">I", binascii.crc32(data) & 0xFFFFFFFF)
 
-def verify_and_strip_crc(data: bytes, algorithm: Union[int, str]) -> bytes:
+def verify_and_strip_crc(data: bytes, algorithm: Union[int, str]) -> Tuple[bytes, bool]:
     """
-    Verify the CRC at the end of data and return data without CRC.
+    Verify the CRC at the end of data and return (data_without_crc, Success).
     algorithm can be 5/"crc16" or 6/"crc32".
     Raises ValueError if verification fails.
     """
@@ -559,7 +569,7 @@ def verify_and_strip_crc(data: bytes, algorithm: Union[int, str]) -> bytes:
         expected = data[-2:]
         if crc16_ccitt(payload) != expected:
             raise ValueError("CRC16 verification failed")
-        return payload
+        return payload, True
     elif algorithm in (6, "crc32"):
         if len(data) < 4:
             raise ValueError("Data too short for CRC32")
@@ -567,6 +577,6 @@ def verify_and_strip_crc(data: bytes, algorithm: Union[int, str]) -> bytes:
         expected = data[-4:]
         if crc32(payload) != expected:
             raise ValueError("CRC32 verification failed")
-        return payload
+        return payload, True
     else:
         raise ValueError(f"Unknown CRC algorithm: {algorithm}")

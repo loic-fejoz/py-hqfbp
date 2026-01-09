@@ -2,9 +2,9 @@ import gzip
 import lzma
 import brotli
 import cbor2
-from typing import Dict, Any, Optional, List, Union, Generator, Tuple
-from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode, CONV_RE, conv_encode, SCR_RE, scr_xor, CHUNK_RE, REPEAT_RE
 import re
+from typing import Dict, Any, Optional, List, Union, Generator, Tuple
+from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode, CONV_RE, conv_encode, SCR_RE, scr_xor, CHUNK_RE, REPEAT_RE, _REV_ENCODING_REGISTRY
 
 
 class PDUGenerator:
@@ -78,86 +78,116 @@ class PDUGenerator:
                 if m:
                     n, k = map(int, m.groups())
                     data = rs_encode(data, n, k)
-                else:
+                elif RQ_RE.match(enc):
                     m = RQ_RE.match(enc)
-                    if m:
-                        rq_len, mtu, repair_count = map(int, m.groups())
-                        data = rq_encode(data, rq_len, mtu, repair_count)
-                    else:
-                        m = CONV_RE.match(enc)
-                        if m:
-                            k, rate = m.groups()
-                            data = conv_encode(data, int(k), rate)
-                        else:
-                            m = SCR_RE.match(enc)
-                            if m:
-                                poly_str = m.group(1)
-                                poly = int(poly_str, 0) # Handles 0x and decimal
-                                data = scr_xor(data, poly)
-            # Add other encodings here (deflate, etc.) if needed
+                    rq_len, mtu, repair_count = map(int, m.groups())
+                    # RaptorQ is special: it returns a LIST of chunks
+                    return rq_encode(data, rq_len, mtu, repair_count)
+                elif CONV_RE.match(enc):
+                    m = CONV_RE.match(enc)
+                    k_val, rate = m.groups()
+                    data = conv_encode(data, int(k_val), rate)
+                elif SCR_RE.match(enc):
+                    m = SCR_RE.match(enc)
+                    poly_str = m.group(1)
+                    poly = int(poly_str, 0)
+                    data = scr_xor(data, poly)
         return data
 
-    def _resolve_encodings(self) -> List[Union[str, int]]:
-        """
-        Unify self.encodings and self.max_payload_size into a single sequence.
-        If max_payload_size is set but no chunk() is in encodings, 
-        insert chunk(size) right before the 'h' boundary.
-        """
-        encs = self.encodings if isinstance(self.encodings, list) else ([self.encodings] if self.encodings else [])
+    def _parse_encodings(self, val: Union[str, List[Union[str, int]], None]) -> Tuple[List[Union[str, int]], List[Union[str, int]], bool]:
+        """Split encodings into (pre, post, has_boundary). Used by tests."""
+        if val is None: return [], [], False
         
-        # Check if we already have an explicit chunking
-        has_chunk = any(isinstance(e, str) and CHUNK_RE.match(e) for e in encs)
+        raw_list = []
+        if isinstance(val, str):
+            raw_list = [val]
+        else:
+            raw_list = list(val)
         
-        if not has_chunk and self.max_payload_size is not None:
-            # Find boundary 'h' (-1)
-            boundary_idx = -1
-            if "h" in encs:
-                boundary_idx = encs.index("h")
-            elif -1 in encs:
-                boundary_idx = encs.index(-1)
-
-            if boundary_idx != -1:
-                encs.insert(boundary_idx, f"chunk({self.max_payload_size})")
+        # Split strings inside the list, respecting parentheses
+        encs = []
+        for item in raw_list:
+            if isinstance(item, str):
+                # Manual splitting to handle balanced parentheses
+                res = []
+                current = []
+                depth = 0
+                for char in item:
+                    if char == '(': depth += 1
+                    elif char == ')': depth -= 1
+                    if char == ',' and depth == 0:
+                        res.append("".join(current).strip())
+                        current = []
+                    else:
+                        current.append(char)
+                if current:
+                    res.append("".join(current).strip())
+                encs.extend(res)
             else:
-                # No boundary, just append it
-                encs.append(f"chunk({self.max_payload_size})")
+                encs.append(item)
+
+        # Convert numeric strings to ints if they match registry
+        encs = [int(e) if isinstance(e, str) and e.isdigit() else e for e in encs]
         
-        # Ensure 'chunk(k)' before 'rs(n, k)'
-        new_encs = []
-        for e in encs:
-            if isinstance(e, str):
-                m = RS_RE.match(e)
-                if m:
-                    k = int(m.group(2))
-                    chunk_marker = f"chunk({k})"
-                    if not (new_encs and new_encs[-1] == chunk_marker):
-                        new_encs.append(chunk_marker)
-            new_encs.append(e)
-        encs = new_encs
-
-        # Ensure a boundary marker is present
-        if not (-1 in encs or "h" in encs):
-            encs.append(-1)
-        
-        return encs
-
-    def _clean_encodings(self, encodings: List[Union[str, int]]) -> List[Union[str, int]]:
-        """
-        Remove all encodings that shall not be transmitted on air,
-        eg chunk(n), repeat(m), etc.
-        Keep boundary marker 'h'/-1 as it defines pre/post boundary split.
-        """
-        return [e for e in encodings if not isinstance(e, str) or (not CHUNK_RE.match(e) and not REPEAT_RE.match(e))]
-
-
-    def _parse_encodings(self, val: Optional[Union[str, List[Union[str, int]]]]) -> Tuple[List[Union[str, int]], List[Union[str, int]], bool]:
-        if not val:
-            return [], [], False
-        encs = val if isinstance(val, list) else [val]
         for i, e in enumerate(encs):
             if e in (-1, "h"):
                 return encs[:i], encs[i+1:], True
         return encs, [], False
+
+    def _resolve_encodings(self) -> List[Union[str, int]]:
+        """Unify self.encodings and self.max_payload_size into a single sequence."""
+        pre, post, has_boundary = self._parse_encodings(self.encodings)
+        encs = pre + ([-1] if has_boundary else []) + post
+        
+        # Ensure a boundary marker is present
+        if not (-1 in encs or "h" in encs):
+            encs.append(-1)
+        
+        # Automatic FEC Alignment: pre-boundary RS or RQ should trigger chunking
+        # Find boundary
+        try:
+            boundary_idx = encs.index(-1)
+        except ValueError:
+            boundary_idx = encs.index("h")
+            
+        pre = encs[:boundary_idx]
+        has_chunk = any(isinstance(e, str) and CHUNK_RE.match(e) for e in pre)
+        
+        if not has_chunk:
+            for i, e in enumerate(pre):
+                if isinstance(e, str):
+                    rs_m = RS_RE.match(e)
+                    if rs_m:
+                        # Insert chunk(k) BEFORE the RS encoding
+                        encs.insert(i, f"chunk({rs_m.group(2)})")
+                        has_chunk = True
+                        break
+                    rq_m = RQ_RE.match(e)
+                    if rq_m:
+                        # RaptorQ handles its own segmentation, no chunk() needed
+                        has_chunk = True # Mark as handled to avoid max_payload_size chunking
+                        break
+        
+        if not has_chunk and self.max_payload_size is not None:
+            # Find boundary index again in case it shifted
+            try:
+                b_idx = encs.index(-1)
+            except ValueError:
+                b_idx = encs.index("h")
+            encs.insert(b_idx, f"chunk({self.max_payload_size})")
+
+        return encs
+
+    def _clean_encodings(self, encodings: List[Union[str, int]]) -> List[Union[str, int]]:
+        """Convert 'h' to -1 and keep markers."""
+        return [_REV_ENCODING_REGISTRY.get(e, e) if e == "h" else e for e in encodings]
+
+    def _parse_split(self, val: List[Union[str, int]]) -> Tuple[List[Union[str, int]], List[Union[str, int]], bool]:
+        """Split into pre and post boundary."""
+        for i, e in enumerate(val):
+            if e in (-1, "h"):
+                return val[:i], val[i+1:], True
+        return val, [], False
 
     def generate(self, data: bytes, content_type: Optional[str] = None) -> Generator[bytes, None, None]:
         """
@@ -182,8 +212,6 @@ class PDUGenerator:
             header_template[HQFBP_CBOR_KEYS['Src-Callsign']] = self.src_callsign
         if self.dst_callsign:
             header_template[HQFBP_CBOR_KEYS['Dst-Callsign']] = self.dst_callsign
-        if full_encs:
-            header_template[HQFBP_CBOR_KEYS['Content-Encoding']] = self._clean_encodings(full_encs)
         if content_type:
             header_template[HQFBP_CBOR_KEYS['Content-Type']] = content_type
 
@@ -191,7 +219,6 @@ class PDUGenerator:
             if enc in (-1, "h"):
                 # Boundary marker: Pack everything into PDUs
                 total_chunks = len(current_chunks)
-                
                 new_chunks = []
                 for i, chunk_data in enumerate(current_chunks):
                     header = header_template.copy()
@@ -199,8 +226,7 @@ class PDUGenerator:
                     # Message-Id management
                     if i == 0:
                         msg_id = data_orig_id
-                        if self._next_msg_id == msg_id:
-                            self._next_msg_id += 1
+                        if self._next_msg_id == msg_id: self._next_msg_id += 1
                     else:
                         msg_id = self._get_next_msg_id()
 
@@ -208,17 +234,19 @@ class PDUGenerator:
                         header[HQFBP_CBOR_KEYS['Total-Chunks']] = total_chunks
                         header[HQFBP_CBOR_KEYS['Chunk-Id']] = i
                         header[HQFBP_CBOR_KEYS['Original-Message-Id']] = data_orig_id
-                        header[HQFBP_CBOR_KEYS['Message-Id']] = msg_id
-                    else:
-                        header[HQFBP_CBOR_KEYS['Message-Id']] = msg_id
+                    
+                    header[HQFBP_CBOR_KEYS['Message-Id']] = msg_id
                     
                     if i > 0 and HQFBP_CBOR_KEYS['Content-Type'] in header:
                         del header[HQFBP_CBOR_KEYS['Content-Type']]
+                    
+                    # Set Content-Encoding for THIS PDU
+                    # It should include EVERYTHING in full_encs
+                    header[HQFBP_CBOR_KEYS['Content-Encoding']] = self._clean_encodings(full_encs)
                         
                     new_chunks.append(pack(header, chunk_data))
                 current_chunks = new_chunks
             elif isinstance(enc, str) and CHUNK_RE.match(enc):
-                # Chunking
                 m = CHUNK_RE.match(enc)
                 size = int(m.group(1))
                 new_chunks = []
@@ -227,7 +255,6 @@ class PDUGenerator:
                         new_chunks.append(chunk[j : j + size])
                 current_chunks = new_chunks
             elif isinstance(enc, str) and REPEAT_RE.match(enc):
-                # Duplication
                 m = REPEAT_RE.match(enc)
                 count = int(m.group(1))
                 new_chunks = []
@@ -239,26 +266,27 @@ class PDUGenerator:
                 # Transformation
                 new_chunks = []
                 for c in current_chunks:
-                    if enc.startswith("rq(dlen,"):
+                    # Update RaptorQ dynamic length if needed
+                    if isinstance(enc, str) and enc.startswith("rq(dlen,"):
                         enc = enc.replace("rq(dlen,", "rq(" + str(int(len(c))) + ",")
                         full_encs[enc_idx] = enc
-                        header_template[HQFBP_CBOR_KEYS['Content-Encoding']] = self._clean_encodings(full_encs)
+                    
                     chunks = self._apply_encodings(c, [enc])
                     if isinstance(chunks, bytes):
                         new_chunks.append(chunks)
-                    else:
+                    elif isinstance(chunks, list):
                         new_chunks.extend(chunks)
+                    else:
+                        raise TypeError(f"Unexpected return type from _apply_encodings: {type(chunks)}")
                 current_chunks = new_chunks
 
         # Yield Announcement if requested
         if self.announcement_encoder:
             self.announcement_encoder._next_msg_id = ann_msg_id
-            
             ann_payload_dict = {
                 HQFBP_CBOR_KEYS['Message-Id']: data_orig_id,
             }
-            if full_encs:
-                ann_payload_dict[HQFBP_CBOR_KEYS['Content-Encoding']] = self._clean_encodings(full_encs)
+            ann_payload_dict[HQFBP_CBOR_KEYS['Content-Encoding']] = self._clean_encodings(full_encs)
             
             for pdu in self.announcement_encoder.generate(
                 pack(ann_payload_dict, b""),
