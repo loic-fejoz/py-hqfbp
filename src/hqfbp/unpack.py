@@ -3,6 +3,7 @@ import sys
 import os
 import mimetypes
 import datetime
+import socket
 import cbor2
 from hqfbp.deframer import Deframer, PDUEvent, MessageEvent
 from hqfbp import HQFBP_CBOR_KEYS, human_readable_json
@@ -59,7 +60,8 @@ class KISSDeFramer:
 def main():
     parser = argparse.ArgumentParser(description="Unpack KISS frames containing HQFBP PDUs.")
     parser.add_argument("output", help="Output folder to save received files")
-    parser.add_argument("input", nargs="?", default="-", help="Input KISS file (default: stdin)")
+    parser.add_argument("--input", default="-", help="Input KISS file (default: stdin)")
+    parser.add_argument("--tcp", help="KISS-over-TCP server address (e.g., localhost:8001)")
     
     args = parser.parse_args()
 
@@ -78,14 +80,27 @@ def main():
     kiss_decoder = KISSDeFramer()
 
     try:
-        if args.input == "-":
+        if args.tcp:
+            try:
+                host, port = args.tcp.rsplit(":", 1)
+                host = host.strip("[]")
+                print(f"Connecting to KISS-over-TCP server at {host}:{port}...")
+                f_in = socket.create_connection((host, int(port)))
+            except Exception as e:
+                print(f"Error connecting to TCP server: {e}", file=sys.stderr)
+                sys.exit(1)
+        elif args.input == "-":
             f_in = sys.stdin.buffer
         else:
             f_in = open(args.input, "rb")
         
         with f_in:
             while True:
-                chunk = f_in.read(4096)
+                if hasattr(f_in, "recv"):
+                    chunk = f_in.recv(4096)
+                else:
+                    chunk = f_in.read(4096)
+                
                 if not chunk:
                     break
                 

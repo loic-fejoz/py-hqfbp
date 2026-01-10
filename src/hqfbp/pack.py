@@ -3,6 +3,7 @@ import mimetypes
 import os
 import sys
 import re
+import socket
 import tomllib
 import tomlkit
 from hqfbp.generator import PDUGenerator
@@ -34,10 +35,8 @@ def encode_kiss_frame(pdu: bytes) -> bytes:
 
 def main():
     parser = argparse.ArgumentParser(description="Pack a file into KISS frames using the HQFBP protocol.")
-    # Standard send_udp arguments for compatibility
+    # Standard pack arguments
     parser.add_argument("filepath", help="Path to the file to send")
-    parser.add_argument("ip", help="Destination IP address (ignored for packing)")
-    parser.add_argument("port", type=int, help="Destination UDP port (ignored for packing)")
     parser.add_argument("--src-callsign", required=True, help="Source callsign")
     parser.add_argument("--encodings", help="Comma-separated list of encodings (e.g., 'gzip,h,crc32')")
     parser.add_argument("--announcement-encodings", help="Comma-separated list of announcement encodings")
@@ -45,8 +44,9 @@ def main():
     parser.add_argument("--msg-id", type=int, help="Starting message ID")
     parser.add_argument("--config", help="Path to TOML configuration file")
     
-    # Specific argument for packing
+    # Specific arguments for packing/TCP
     parser.add_argument("--output", help="Output KISS file path (default: <filepath>.kiss)")
+    parser.add_argument("--tcp", help="KISS-over-TCP server address (e.g., localhost:8001)")
 
     args = parser.parse_args()
 
@@ -96,21 +96,35 @@ def main():
         initial_msg_id=starting_msg_id
     )
 
-    # Determine output file
-    output_path = args.output
-    if not output_path:
-        output_path = f"{args.filepath}.kiss"
+    # Determine output mode
+    out_f = None
+    if args.tcp:
+        try:
+            host, port = args.tcp.rsplit(":", 1)
+            # Remove brackets if present (e.g. [::1])
+            host = host.strip("[]")
+            out_f = socket.create_connection((host, int(port)))
+        except Exception as e:
+            print(f"Error connecting to TCP server: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        output_path = args.output or f"{args.filepath}.kiss"
+        print(f"Writing to KISS file {output_path}...")
+        out_f = open(output_path, "wb")
     
     # Generate and write frames
     try:
         count = 0
-        with open(output_path, "wb") as f_out:
+        with out_f:
             for pdu in generator.generate(data, content_type=ctype):
                 kiss_frame = encode_kiss_frame(pdu)
-                f_out.write(kiss_frame)
+                if hasattr(out_f, "sendall"):
+                    out_f.sendall(kiss_frame)
+                else:
+                    out_f.write(kiss_frame)
                 count += 1
         
-        print(f"Successfully packed {count} frames of {args.filepath} into {output_path}")
+        print(f"Successfully sent/packed {count} frames.")
 
         # Update and save config logic is usually not needed for a packer, 
         # unless we want to increment message IDs for the 'next' run.
