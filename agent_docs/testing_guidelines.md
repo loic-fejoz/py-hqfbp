@@ -30,4 +30,6 @@ Scripts in the parent directory (`test_cross_compat_*.sh`) verify that PDUs gene
 - **RNG Seeding:** Always seed random bit flippers in tests to ensure reproducible failures.
 
 > [!IMPORTANT]
-> **Always verify `pytest` before committing.** As the reference implementation, any regression in Python will propagate to all other language ports.
+> **Verification Mandates:**
+> - **Always verify `pytest` before committing.** As the reference implementation, any regression in Python will propagate to all other language ports.
+> - **Zero Regression Rule:** EVERY bug fix MUST be accompanied by a new unit test in `tests/`.

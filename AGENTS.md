@@ -24,4 +24,6 @@ Read these specialized docs in `agent_docs/` before starting specific tasks:
 3. **[Conventions](file:///home/loic/projets/py-hqfbp/agent_docs/conventions.md):** Python-specific patterns and protocol invariants.
 
 > [!IMPORTANT]
-> **Interoperability Requirement:** Since this is the reference implementation, any logic changes MUST be verified for backward compatibility and bit-accuracy against [hqfbp-rs](https://github.com/loic-fejoz/hqfbp-rs/). Use the `test_roundtrip.sh` and cross-test scripts in the parent directory.
+> **Interoperability Requirement:**
+> - Since this is the reference implementation, any logic changes MUST be verified for backward compatibility and bit-accuracy against [hqfbp-rs](https://github.com/loic-fejoz/hqfbp-rs/). Use the `test_roundtrip.sh` and cross-test scripts in the parent directory.
+> - **Zero Regression Rule:** EVERY bug fix MUST include a corresponding unit test in `tests/` that demonstrates the fix.
