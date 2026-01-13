@@ -1,0 +1,9 @@
+{
+  "name": "fec_lt",
+  "filepath": "test_payload.bin",
+  "src_callsign": "TEST-GEN",
+  "encodings": "h,lt(dlen,512,10)",
+  "announcement_encodings": "h,crc32,repeat(3)",
+  "max_payload_size": 6000,
+  "output": "fec_lt.kiss"
+}

@@ -18,6 +18,8 @@ from hqfbp import (
     rs_decode,
     RQ_RE,
     rq_decode,
+    LT_RE,
+    lt_decode,
     CONV_RE,
     conv_decode,
     SCR_RE,
@@ -64,7 +66,7 @@ class Deframer:
         pre, _, _ = self._split_encodings(ce)
         lsi = -1
         for i, e in enumerate(pre):
-            if isinstance(e, str) and (CHUNK_RE.match(e) or REPEAT_RE.match(e) or RQ_RE.match(e)): lsi = i
+            if isinstance(e, str) and (CHUNK_RE.match(e) or REPEAT_RE.match(e) or RQ_RE.match(e) or LT_RE.match(e)): lsi = i
         to_apply = pre[lsi+1:] if lsi != -1 else pre
         if to_apply: return self._apply_decoding_list(payload, to_apply, True)
         return payload, 0
@@ -180,7 +182,7 @@ class Deframer:
                     data, ok = verify_and_strip_crc(data, enc)
                     if ok: quality += 1000
             elif isinstance(enc, str):
-                m_rep = REPEAT_RE.match(enc); m_rs = RS_RE.match(enc); m_rq = RQ_RE.match(enc); m_conv = CONV_RE.match(enc); m_scr = SCR_RE.match(enc); m_chunk = CHUNK_RE.match(enc)
+                m_rep = REPEAT_RE.match(enc); m_rs = RS_RE.match(enc); m_rq = RQ_RE.match(enc); m_lt = LT_RE.match(enc); m_conv = CONV_RE.match(enc); m_scr = SCR_RE.match(enc); m_chunk = CHUNK_RE.match(enc)
                 if m_rep:
                     count = int(m_rep.group(1))
                     if isinstance(data, list): data = data[::count]
@@ -198,6 +200,11 @@ class Deframer:
                     rq_len, mtu, _ = map(int, m_rq.groups())
                     if not isinstance(data, list): data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
                     data = rq_decode(data, rq_len, mtu)
+                    quality += 10
+                elif m_lt:
+                    lt_len, mtu, _ = map(int, m_lt.groups())
+                    if not isinstance(data, list): data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
+                    data = lt_decode(data, lt_len, mtu)
                     quality += 10
                 elif m_conv:
                     if isinstance(data, list): data = b"".join(data)
@@ -222,8 +229,9 @@ class Deframer:
         try:
             pre, _, _ = self._split_encodings(merged_header.get(HQFBP_CBOR_KEYS["Content-Encoding"]))
             lsi = -1
+            lsi = -1
             for i, e in enumerate(pre):
-                if isinstance(e, str) and (CHUNK_RE.match(e) or REPEAT_RE.match(e) or RQ_RE.match(e)): lsi = i
+                if isinstance(e, str) and (CHUNK_RE.match(e) or REPEAT_RE.match(e) or RQ_RE.match(e) or LT_RE.match(e)): lsi = i
             msg_encs = pre[:lsi+1] if lsi != -1 else []
             if msg_encs: full_payload, _ = self._apply_decoding_list(full_payload, msg_encs, True)
             if isinstance(full_payload, list): full_payload = b"".join(full_payload)
@@ -271,5 +279,7 @@ class Deframer:
                 for e in (ce if isinstance(ce, list) else [ce]):
                     if isinstance(e, str):
                         m = RQ_RE.match(e)
+                        if m: return tuple(map(int, m.groups()))
+                        m = LT_RE.match(e)
                         if m: return tuple(map(int, m.groups()))
         return None

@@ -4,7 +4,7 @@ import brotli
 import cbor2
 import re
 from typing import Dict, Any, Optional, List, Union, Generator, Tuple
-from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode, CONV_RE, conv_encode, SCR_RE, scr_xor, CHUNK_RE, REPEAT_RE, _REV_ENCODING_REGISTRY
+from hqfbp import pack, HQFBP_CBOR_KEYS, crc16_ccitt, crc32, RS_RE, rs_encode, RQ_RE, rq_encode, LT_RE, lt_encode, CONV_RE, conv_encode, SCR_RE, scr_xor, CHUNK_RE, REPEAT_RE, _REV_ENCODING_REGISTRY
 
 
 class PDUGenerator:
@@ -83,6 +83,10 @@ class PDUGenerator:
                     rq_len, mtu, repair_count = map(int, m.groups())
                     # RaptorQ is special: it returns a LIST of chunks
                     return rq_encode(data, rq_len, mtu, repair_count)
+                elif LT_RE.match(enc):
+                    m = LT_RE.match(enc)
+                    lt_len, mtu, repair_count = m.groups()
+                    return lt_encode(data, int(lt_len), int(mtu), int(repair_count))
                 elif CONV_RE.match(enc):
                     m = CONV_RE.match(enc)
                     k_val, rate = m.groups()
@@ -266,10 +270,14 @@ class PDUGenerator:
                 # Transformation
                 new_chunks = []
                 for c in current_chunks:
-                    # Update RaptorQ dynamic length if needed
-                    if isinstance(enc, str) and enc.startswith("rq(dlen,"):
-                        enc = enc.replace("rq(dlen,", "rq(" + str(int(len(c))) + ",")
-                        full_encs[enc_idx] = enc
+                    # Update RaptorQ/LT dynamic length if needed
+                    if isinstance(enc, str):
+                        if enc.startswith("rq(dlen,"):
+                            enc = enc.replace("rq(dlen,", "rq(" + str(int(len(c))) + ",")
+                            full_encs[enc_idx] = enc
+                        elif enc.startswith("lt(dlen,"):
+                            enc = enc.replace("lt(dlen,", "lt(" + str(int(len(c))) + ",")
+                            full_encs[enc_idx] = enc
                     
                     chunks = self._apply_encodings(c, [enc])
                     if isinstance(chunks, bytes):

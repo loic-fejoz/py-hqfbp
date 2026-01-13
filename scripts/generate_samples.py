@@ -14,6 +14,7 @@ TEST_CASES = [
     ("scrambled", "scr(0x1234),h,crc32", "", 1024),
     ("chunked_large", "gzip,h,crc32", "", 256),
     ("repeat", "h,repeat(3),crc16", "h,crc16", 512),
+    ("fec_lt", "h,lt(dlen,512,10)", "h,crc32,repeat(3)", 6000),
 ]
 
 def generate_payload(size=1024):

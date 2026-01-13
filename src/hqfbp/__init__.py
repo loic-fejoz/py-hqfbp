@@ -87,6 +87,7 @@ _REV_ENCODING_REGISTRY = {v: k for k, v in ENCODING_REGISTRY.items()}
 
 RS_RE = re.compile(r"rs\((\d+),\s*(\d+)\)")
 RQ_RE = re.compile(r"rq\((\d+),\s*(\d+),\s*(\d+)\)")
+LT_RE = re.compile(r"lt\((\d+|dlen),\s*(\d+),\s*(\d+)\)")
 CONV_RE = re.compile(r"conv\((\d+),\s*(\d+/\d+)\)")
 SCR_RE = re.compile(r"scr\((0x[0-9a-fA-F]+|\d+)\)")
 CHUNK_RE = re.compile(r"chunk\((\d+)\)")
@@ -171,6 +172,48 @@ def rq_decode(data: List[bytes], original_count: int, mtu: int) -> bytes:
             return bytes(res)
             
     raise ValueError("RaptorQ decoding failed: insufficient symbols")
+
+def lt_encode(data: bytes, original_count: int, mtu: int, repair_count: int) -> List[bytes]:
+    """
+    Encode data using Luby Transform (LT) codes.
+    
+    Args:
+        data: Binary data to encode.
+        original_count: expected length of the data in bytes.
+        mtu: Maximum transmission unit (symbol size).
+        repair_count: Number of repair packets to encode (beyond K).
+    
+    Returns:
+        List[bytes]: List of encoded packets (chunks).
+    """
+    from hqfbp.lt import LTEncoder
+    if len(data) < original_count:
+        data = data.ljust(original_count, b'\x00')
+    
+    encoder = LTEncoder(data, mtu)
+    return list(encoder.encode(repair_count))
+
+def lt_decode(packets: List[bytes], original_count: int, mtu: int) -> bytes:
+    """
+    Decode data using Luby Transform (LT) codes.
+    
+    Args:
+        packets: List of encoded packets.
+        original_count: expected length.
+        mtu: symbol size.
+        
+    Returns:
+        bytes: Decoded data.
+    """
+    from hqfbp.lt import LTDecoder
+    decoder = LTDecoder(original_count, mtu)
+    for p in packets:
+        decoder.decode(p)
+    
+    res = decoder.get_result()
+    if res:
+        return res
+    raise ValueError("LT decoding failed: insufficient symbols")
 
 def conv_encode(data: bytes, k: int = 7, rate: str = "1/2") -> bytes:
     """
