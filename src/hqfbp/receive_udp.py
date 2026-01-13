@@ -8,8 +8,11 @@ import cbor2
 from hqfbp.deframer import Deframer, PDUEvent, MessageEvent
 from hqfbp import HQFBP_CBOR_KEYS, human_readable_json
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Receive files over UDP using the HQFBP protocol.")
+    parser = argparse.ArgumentParser(
+        description="Receive files over UDP using the HQFBP protocol."
+    )
     parser.add_argument("ip", help="IP address to listen on (e.g., 0.0.0.0)")
     parser.add_argument("port", type=int, help="UDP port to listen on")
     parser.add_argument("output", help="Output folder to save received files")
@@ -55,20 +58,28 @@ def main():
                 if isinstance(ev, PDUEvent):
                     # Log chunk header to stdout
                     print(f"Received PDU: {human_readable_json(ev.header)}")
-                    
+
                     # Detect and display announcement details
-                    if ev.header.get(HQFBP_CBOR_KEYS["Content-Type"]) == "application/vnd.hqfbp+cbor":
+                    if (
+                        ev.header.get(HQFBP_CBOR_KEYS["Content-Type"])
+                        == "application/vnd.hqfbp+cbor"
+                    ):
                         try:
                             ann_header = cbor2.loads(ev.payload)
-                            print(f"  📢 Announcement for Msg-Id {ann_header.get(0)}: {human_readable_json(ann_header)}")
+                            print(
+                                f"  📢 Announcement for Msg-Id {ann_header.get(0)}: {human_readable_json(ann_header)}"
+                            )
                         except Exception as e:
-                            print(f"  ⚠️ Failed to decode announcement: {e}", file=sys.stderr)
-                
+                            print(
+                                f"  ⚠️ Failed to decode announcement: {e}",
+                                file=sys.stderr,
+                            )
+
                 elif isinstance(ev, MessageEvent):
                     # Reassembled message
                     callsign = ev.header.get(HQFBP_CBOR_KEYS["Src-Callsign"], "UNKNOWN")
                     content_type = ev.header.get(HQFBP_CBOR_KEYS["Content-Type"])
-                    
+
                     # Determine extension
                     ext = ".bin"
                     if content_type:
@@ -85,7 +96,9 @@ def main():
                     try:
                         with open(filepath, "wb") as f:
                             f.write(ev.payload)
-                        print(f" ✅ Successfully reassembled message from {callsign}: {filepath} ({len(ev.payload)} bytes)")
+                        print(
+                            f" ✅ Successfully reassembled message from {callsign}: {filepath} ({len(ev.payload)} bytes)"
+                        )
                         print(f"  Header: {human_readable_json(ev.header)}")
                     except Exception as e:
                         print(f"Error writing file {filepath}: {e}", file=sys.stderr)
@@ -94,6 +107,7 @@ def main():
         print("\nStopping...")
     finally:
         sock.close()
+
 
 if __name__ == "__main__":
     main()

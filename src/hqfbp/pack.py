@@ -9,17 +9,18 @@ import tomlkit
 from hqfbp.generator import PDUGenerator
 
 # KISS Constants
-FEND  = b'\xC0'
-FESC  = b'\xDB'
-TFEND = b'\xDC'
-TFESC = b'\xDD'
+FEND = b"\xc0"
+FESC = b"\xdb"
+TFEND = b"\xdc"
+TFESC = b"\xdd"
+
 
 def encode_kiss_frame(pdu: bytes) -> bytes:
     """Encodes a PDU into a KISS frame."""
     frame = bytearray()
     frame.extend(FEND)
-    frame.append(0x00) # Command Byte: Data frame, Port 0
-    
+    frame.append(0x00)  # Command Byte: Data frame, Port 0
+
     for byte in pdu:
         if byte == FEND[0]:
             frame.extend(FESC)
@@ -29,24 +30,38 @@ def encode_kiss_frame(pdu: bytes) -> bytes:
             frame.extend(TFESC)
         else:
             frame.append(byte)
-            
+
     frame.extend(FEND)
     return bytes(frame)
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Pack a file into KISS frames using the HQFBP protocol.")
+    parser = argparse.ArgumentParser(
+        description="Pack a file into KISS frames using the HQFBP protocol."
+    )
     # Standard pack arguments
     parser.add_argument("filepath", help="Path to the file to send")
     parser.add_argument("--src-callsign", required=True, help="Source callsign")
-    parser.add_argument("--encodings", help="Comma-separated list of encodings (e.g., 'gzip,h,crc32')")
-    parser.add_argument("--announcement-encodings", help="Comma-separated list of announcement encodings")
-    parser.add_argument("--max-payload-size", type=int, help="Maximum payload size for chunking")
+    parser.add_argument(
+        "--encodings", help="Comma-separated list of encodings (e.g., 'gzip,h,crc32')"
+    )
+    parser.add_argument(
+        "--announcement-encodings",
+        help="Comma-separated list of announcement encodings",
+    )
+    parser.add_argument(
+        "--max-payload-size", type=int, help="Maximum payload size for chunking"
+    )
     parser.add_argument("--msg-id", type=int, help="Starting message ID")
     parser.add_argument("--config", help="Path to TOML configuration file")
-    
+
     # Specific arguments for packing/TCP
-    parser.add_argument("--output", help="Output KISS file path (default: <filepath>.kiss)")
-    parser.add_argument("--tcp", help="KISS-over-TCP server address (e.g., localhost:8001)")
+    parser.add_argument(
+        "--output", help="Output KISS file path (default: <filepath>.kiss)"
+    )
+    parser.add_argument(
+        "--tcp", help="KISS-over-TCP server address (e.g., localhost:8001)"
+    )
 
     args = parser.parse_args()
 
@@ -61,7 +76,9 @@ def main():
     callsign_config = config_data.get("callsigns", {}).get(callsign, {})
 
     encodings_str = args.encodings or callsign_config.get("encodings")
-    ann_encodings_str = args.announcement_encodings or callsign_config.get("announcement_encodings")
+    ann_encodings_str = args.announcement_encodings or callsign_config.get(
+        "announcement_encodings"
+    )
     max_payload_size = args.max_payload_size or callsign_config.get("max_payload_size")
     starting_msg_id = args.msg_id or callsign_config.get("last_msg_id", 1)
 
@@ -73,7 +90,7 @@ def main():
     ctype, _ = mimetypes.guess_type(args.filepath)
     if ctype is None:
         ctype = "application/octet-stream"
-    
+
     def parse_encs(s):
         if not s:
             return None
@@ -93,7 +110,7 @@ def main():
         max_payload_size=max_payload_size,
         encodings=encodings,
         announcement_encodings=ann_encs,
-        initial_msg_id=starting_msg_id
+        initial_msg_id=starting_msg_id,
     )
 
     # Determine output mode
@@ -111,7 +128,7 @@ def main():
         output_path = args.output or f"{args.filepath}.kiss"
         print(f"Writing to KISS file {output_path}...")
         out_f = open(output_path, "wb")
-    
+
     # Generate and write frames
     try:
         count = 0
@@ -123,10 +140,10 @@ def main():
                 else:
                     out_f.write(kiss_frame)
                 count += 1
-        
+
         print(f"Successfully sent/packed {count} frames.")
 
-        # Update and save config logic is usually not needed for a packer, 
+        # Update and save config logic is usually not needed for a packer,
         # unless we want to increment message IDs for the 'next' run.
         # Keeping it for full parity.
         if args.config:
@@ -138,19 +155,21 @@ def main():
 
             if "callsigns" not in doc:
                 doc["callsigns"] = tomlkit.table()
-            
+
             if callsign not in doc["callsigns"]:
                 doc["callsigns"][callsign] = tomlkit.table()
-            
+
             doc["callsigns"][callsign]["last_msg_id"] = generator._next_msg_id
-            
+
             with open(args.config, "w") as f:
                 f.write(tomlkit.dumps(doc))
 
     except Exception:
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

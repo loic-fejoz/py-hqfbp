@@ -1,80 +1,84 @@
-import math
 import pytest
-from hqfbp import rq_encode, rq_decode, pack, unpack, HQFBP_CBOR_KEYS
+from hqfbp import rq_encode, rq_decode
 from hqfbp.generator import PDUGenerator
-from hqfbp.deframer import Deframer, MessageEvent, PDUEvent
+from hqfbp.deframer import Deframer, MessageEvent
+
 
 def test_rq_basic_encode_decode():
-    data = b"Hello RaptorQ! " * 10 # 150 bytes
+    data = b"Hello RaptorQ! " * 10  # 150 bytes
     mtu = 10
     repair = 2
-    
+
     encoded = rq_encode(data, len(data), mtu, repair)
     decoded = rq_decode(encoded, len(data), mtu)
-    
+
     assert decoded == data
 
+
 def test_rq_with_loss():
-    data = b"Resilient Data Transmission" * 5 # 135 bytes
+    data = b"Resilient Data Transmission" * 5  # 135 bytes
     mtu = 10
     repair = 5
-    
+
     packets = rq_encode(data, len(data), mtu, repair)
- 
+
     # We should have k=14 source packets + 5 repair = 19 packets
     # (Actually k might be higher due to alignment, but rq_encode already accounts for it)
     # Based on our rq_encode which returns k + repair
     assert len(packets) == 19
-    
+
     # Simulate losing 3 packets (we still have 16, which is > 14)
     del packets[2]
     del packets[5]
     del packets[10]
-    
+
     # Decoding should still work
     decoded = rq_decode(packets, len(data), mtu)
     assert decoded == data
 
+
 def test_generator_deframer_rq_post_boundary():
     data = b"End-to-end RaptorQ test data" * 1
-    rq_len = len(data) + 45 # Must be greater than len(data + CBOR header)
-    mtu = rq_len+60
+    rq_len = len(data) + 45  # Must be greater than len(data + CBOR header)
+    mtu = rq_len + 60
     repair_count = 5
     gen = PDUGenerator(
         src_callsign="F4JXQ",
         encodings=["h", f"rq({rq_len}, {mtu}, {repair_count})"],
-        announcement_encodings=["identity"]
+        announcement_encodings=["identity"],
     )
-    
+
     pdus = list(gen.generate(data))
-    
-    assert len(pdus) >= 1 + repair_count # Announcement + repair packets
-    
+
+    assert len(pdus) >= 1 + repair_count  # Announcement + repair packets
+
     deframer = Deframer()
     for pdu in pdus:
         deframer.receive_bytes(pdu)
-    
+
     found = False
     while True:
         ev = deframer.next_event()
-        if ev is None: break
+        if ev is None:
+            break
         if isinstance(ev, MessageEvent):
             assert ev.payload.startswith(data)
             found = True
     assert found, "Message not deframed"
 
+
 def test_rq_decode_insufficient_symbols():
     data = b"Limited redundancy"
     mtu = 4
     repair = 1
-    
+
     packets = rq_encode(data, len(data), mtu, repair)
-    
+
     # Lose 2. We should have 6-2=4 symbols. We need at least 5 to decode correctly?
     # Wait, RaptorQ needs at least K symbols.
     del packets[0]
     del packets[1]
     del packets[2]
-    
+
     with pytest.raises(ValueError, match="insufficient symbols"):
         rq_decode(packets, len(data), mtu)

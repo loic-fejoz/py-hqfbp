@@ -1,108 +1,127 @@
 import pytest
 import gzip
-import lzma
 from hqfbp import pack, unpack, merge_headers, get_coap_id, HQFBP_CBOR_KEYS
+
 
 def test_simple_pack_unpack():
     # Example 1 style
     src_callsign = "FOSM-1"
-    content = "Autour de la terre, je pense aux élèves scrutant l'horizon.".encode('utf-8')
-    header = {
-        "Message-Id": 1,
-        "Src-Callsign": src_callsign
-    }
-    
+    content = "Autour de la terre, je pense aux élèves scrutant l'horizon.".encode(
+        "utf-8"
+    )
+    header = {"Message-Id": 1, "Src-Callsign": src_callsign}
+
     pdu = pack(header, content)
-    
+
     decoded_header, decoded_payload = unpack(pdu)
-    
-    assert decoded_header[HQFBP_CBOR_KEYS['Message-Id']] == 1
-    assert decoded_header[HQFBP_CBOR_KEYS['Src-Callsign']] == src_callsign
+
+    assert decoded_header[HQFBP_CBOR_KEYS["Message-Id"]] == 1
+    assert decoded_header[HQFBP_CBOR_KEYS["Src-Callsign"]] == src_callsign
     assert decoded_payload == content
+
 
 def test_mandatory_msg_id():
     with pytest.raises(ValueError, match="Message-Id.*mandatory"):
         pack({"Src-Callsign": "N0CALL"}, b"data")
 
+
 def test_chunking_and_merging():
     # Example 2 style
     lorem = b"Lorem ipsum dolor sit amet, consectetur adipiscing elit."
-    chunk1_data = lorem[:len(lorem)//2]
-    chunk2_data = lorem[len(lorem)//2:]
-    
+    chunk1_data = lorem[: len(lorem) // 2]
+    chunk2_data = lorem[len(lorem) // 2 :]
+
     h1 = {
         "Message-Id": 1001,
         "Original-Message-Id": 1001,
         "Chunk-Id": 0,
         "Total-Chunks": 2,
         "File-Size": len(lorem),
-        "Content-Type": "text/plain"
+        "Content-Type": "text/plain",
     }
-    
+
     h2 = {
         "Message-Id": 1002,
         "Original-Message-Id": 1001,
         "Chunk-Id": 1,
         "Total-Chunks": 2,
-        "Repr-Digest": b"somehash"
+        "Repr-Digest": b"somehash",
     }
-    
+
     pdu1 = pack(h1, chunk1_data)
     pdu2 = pack(h2, chunk2_data)
-    
+
     dec_h1, _ = unpack(pdu1)
     dec_h2, _ = unpack(pdu2)
-    
+
     merged = merge_headers([dec_h1, dec_h2])
-    
-    assert merged[HQFBP_CBOR_KEYS['Content-Type']] == "text/plain"  # Content-Type from h1
-    assert merged[HQFBP_CBOR_KEYS['Repr-Digest']] == b"somehash"   # Repr-Digest from h2
-    assert merged[HQFBP_CBOR_KEYS['File-Size']] == len(lorem)   # File-Size from h1
+
+    assert (
+        merged[HQFBP_CBOR_KEYS["Content-Type"]] == "text/plain"
+    )  # Content-Type from h1
+    assert merged[HQFBP_CBOR_KEYS["Repr-Digest"]] == b"somehash"  # Repr-Digest from h2
+    assert merged[HQFBP_CBOR_KEYS["File-Size"]] == len(lorem)  # File-Size from h1
     # Chunking params should be excluded from final merged global header
-    assert HQFBP_CBOR_KEYS['Chunk-Id'] not in merged
-    assert HQFBP_CBOR_KEYS['Original-Message-Id'] not in merged
+    assert HQFBP_CBOR_KEYS["Chunk-Id"] not in merged
+    assert HQFBP_CBOR_KEYS["Original-Message-Id"] not in merged
+
 
 def test_content_encoding():
     # Example 3.a/b style
     content = b"Compressed data"
     compressed = gzip.compress(content)
-    
+
     header = {
-        HQFBP_CBOR_KEYS['Message-Id']: 1,
-        HQFBP_CBOR_KEYS['Content-Encoding']: "gzip"
+        HQFBP_CBOR_KEYS["Message-Id"]: 1,
+        HQFBP_CBOR_KEYS["Content-Encoding"]: "gzip",
     }
-    
+
     pdu = pack(header, compressed)
     dec_h, dec_p = unpack(pdu)
-    
-    assert dec_h[HQFBP_CBOR_KEYS['Content-Encoding']] == 1 # Optimized from "gzip"
+
+    assert dec_h[HQFBP_CBOR_KEYS["Content-Encoding"]] == 1  # Optimized from "gzip"
     assert gzip.decompress(dec_p) == content
+
 
 def test_coap_id():
     assert get_coap_id("image/png") == 23
     assert get_coap_id("text/plain;charset=utf-8") == 0
     assert get_coap_id("unknown/type") is None
 
+
 def test_inconsistent_merge():
-    h1 = {HQFBP_CBOR_KEYS['Message-Id']: 1, HQFBP_CBOR_KEYS['Src-Callsign']: "CALL-1", HQFBP_CBOR_KEYS['Chunk-Id']: 0}
-    h2 = {HQFBP_CBOR_KEYS['Message-Id']: 2, HQFBP_CBOR_KEYS['Src-Callsign']: "CALL-2", HQFBP_CBOR_KEYS['Chunk-Id']: 1} # Different SRC
-    
+    h1 = {
+        HQFBP_CBOR_KEYS["Message-Id"]: 1,
+        HQFBP_CBOR_KEYS["Src-Callsign"]: "CALL-1",
+        HQFBP_CBOR_KEYS["Chunk-Id"]: 0,
+    }
+    h2 = {
+        HQFBP_CBOR_KEYS["Message-Id"]: 2,
+        HQFBP_CBOR_KEYS["Src-Callsign"]: "CALL-2",
+        HQFBP_CBOR_KEYS["Chunk-Id"]: 1,
+    }  # Different SRC
+
     with pytest.raises(ValueError, match="Inconsistent"):
         merge_headers([h1, h2])
 
+
 def test_human_readable_json():
     from hqfbp import human_readable_json
-    
+
     header = {
-        HQFBP_CBOR_KEYS['Message-Id']: 1001,
-        HQFBP_CBOR_KEYS['Src-Callsign']: "FOSM-1",
-        HQFBP_CBOR_KEYS['Content-Format']: 23, # image/png
-        HQFBP_CBOR_KEYS['Content-Encoding']: [1, -1, "rs(255,233)"], # gzip, boundary, custom string
-        HQFBP_CBOR_KEYS['File-Size']: 4032
+        HQFBP_CBOR_KEYS["Message-Id"]: 1001,
+        HQFBP_CBOR_KEYS["Src-Callsign"]: "FOSM-1",
+        HQFBP_CBOR_KEYS["Content-Format"]: 23,  # image/png
+        HQFBP_CBOR_KEYS["Content-Encoding"]: [
+            1,
+            -1,
+            "rs(255,233)",
+        ],  # gzip, boundary, custom string
+        HQFBP_CBOR_KEYS["File-Size"]: 4032,
     }
-    
+
     readable = human_readable_json(header)
-    
+
     assert readable["Message-Id"] == 1001
     assert readable["Src-Callsign"] == "FOSM-1"
     assert readable["Content-Type"] == "image/png"
@@ -110,75 +129,104 @@ def test_human_readable_json():
     assert readable["Content-Encoding"] == ["gzip", "h", "rs(255,233)"]
     assert readable["File-Size"] == 4032
 
+
 def test_human_readable_json_content_type():
     from hqfbp import human_readable_json
+
     # Test that Content-Type (4) is also handled if present
-    h1 = {HQFBP_CBOR_KEYS['Message-Id']: 1, HQFBP_CBOR_KEYS['Content-Type']: "text/markdown"}
+    h1 = {
+        HQFBP_CBOR_KEYS["Message-Id"]: 1,
+        HQFBP_CBOR_KEYS["Content-Type"]: "text/markdown",
+    }
     r1 = human_readable_json(h1)
     assert r1["Content-Type"] == "text/markdown"
-    
+
     # Test precedence or merge (Content-Format 3 should probably win or handle both)
     # In my implementation, I check 3 and if it exists it replaces current content_type_val
-    h2 = {HQFBP_CBOR_KEYS['Message-Id']: 1, HQFBP_CBOR_KEYS['Content-Format']: 50} # application/json
+    h2 = {
+        HQFBP_CBOR_KEYS["Message-Id"]: 1,
+        HQFBP_CBOR_KEYS["Content-Format"]: 50,
+    }  # application/json
     r2 = human_readable_json(h2)
     assert r2["Content-Type"] == "application/json"
 
+
 def test_pack_optimization():
     from hqfbp import pack, unpack
-    
+
     # Test 1: Content-Type string to CoAP ID (png -> 23)
-    p1 = pack({HQFBP_CBOR_KEYS['Message-Id']: 1, "Content-Type": "image/png"}, b"pngdata")
+    p1 = pack(
+        {HQFBP_CBOR_KEYS["Message-Id"]: 1, "Content-Type": "image/png"}, b"pngdata"
+    )
     h1, _ = unpack(p1)
-    assert HQFBP_CBOR_KEYS['Content-Type'] not in h1
-    assert h1[HQFBP_CBOR_KEYS['Content-Format']] == 23
-    
-    p2 = pack({HQFBP_CBOR_KEYS['Message-Id']: 2, "Content-Encoding": ["gzip", "h"]}, b"gzdata")
+    assert HQFBP_CBOR_KEYS["Content-Type"] not in h1
+    assert h1[HQFBP_CBOR_KEYS["Content-Format"]] == 23
+
+    p2 = pack(
+        {HQFBP_CBOR_KEYS["Message-Id"]: 2, "Content-Encoding": ["gzip", "h"]}, b"gzdata"
+    )
     h2, _ = unpack(p2)
-    assert h2[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1]
-    
+    assert h2[HQFBP_CBOR_KEYS["Content-Encoding"]] == [1, -1]
+
     # Test 3: Omit default Content-Format 0 / text/plain
-    p3 = pack({HQFBP_CBOR_KEYS['Message-Id']: 3, "Content-Type": "text/plain;charset=utf-8"}, b"text")
+    p3 = pack(
+        {HQFBP_CBOR_KEYS["Message-Id"]: 3, "Content-Type": "text/plain;charset=utf-8"},
+        b"text",
+    )
     h3, _ = unpack(p3)
-    assert HQFBP_CBOR_KEYS['Content-Format'] not in h3
-    assert HQFBP_CBOR_KEYS['Content-Type'] not in h3
-    
+    assert HQFBP_CBOR_KEYS["Content-Format"] not in h3
+    assert HQFBP_CBOR_KEYS["Content-Type"] not in h3
+
     # Test 4: Single string encoding
-    p4 = pack({HQFBP_CBOR_KEYS['Message-Id']: 4, "Content-Encoding": "lzma"}, b"lzmadata")
+    p4 = pack(
+        {HQFBP_CBOR_KEYS["Message-Id"]: 4, "Content-Encoding": "lzma"}, b"lzmadata"
+    )
     h4, _ = unpack(p4)
-    assert h4[HQFBP_CBOR_KEYS['Content-Encoding']] == 4
+    assert h4[HQFBP_CBOR_KEYS["Content-Encoding"]] == 4
+
 
 def test_pack_trailing_h():
     from hqfbp import pack, unpack
-    
-    p1 = pack({HQFBP_CBOR_KEYS['Message-Id']: 1, "Content-Encoding": ["gzip", "h"]}, b"data")
+
+    p1 = pack(
+        {HQFBP_CBOR_KEYS["Message-Id"]: 1, "Content-Encoding": ["gzip", "h"]}, b"data"
+    )
     h1, _ = unpack(p1)
-    assert h1[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1]
-    
+    assert h1[HQFBP_CBOR_KEYS["Content-Encoding"]] == [1, -1]
+
     # Test case 2: ["h"] -> should be -1
-    p2 = pack({HQFBP_CBOR_KEYS['Message-Id']: 2, "Content-Encoding": ["h"]}, b"data")
+    p2 = pack({HQFBP_CBOR_KEYS["Message-Id"]: 2, "Content-Encoding": ["h"]}, b"data")
     h2, _ = unpack(p2)
-    assert h2[HQFBP_CBOR_KEYS['Content-Encoding']] == -1
-    
+    assert h2[HQFBP_CBOR_KEYS["Content-Encoding"]] == -1
+
     # Test case 3: ["gzip", "h", "crc32"] -> should remain [1, -1, 6]
-    p3 = pack({HQFBP_CBOR_KEYS['Message-Id']: 3, "Content-Encoding": ["gzip", "h", "crc32"]}, b"data")
+    p3 = pack(
+        {HQFBP_CBOR_KEYS["Message-Id"]: 3, "Content-Encoding": ["gzip", "h", "crc32"]},
+        b"data",
+    )
     h3, _ = unpack(p3)
-    assert h3[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1, 6]
-    
-    p4 = pack({HQFBP_CBOR_KEYS['Message-Id']: 4, "Content-Encoding": ["gzip", "h", "h"]}, b"data")
+    assert h3[HQFBP_CBOR_KEYS["Content-Encoding"]] == [1, -1, 6]
+
+    p4 = pack(
+        {HQFBP_CBOR_KEYS["Message-Id"]: 4, "Content-Encoding": ["gzip", "h", "h"]},
+        b"data",
+    )
     h4, _ = unpack(p4)
-    assert h4[HQFBP_CBOR_KEYS['Content-Encoding']] == [1, -1, -1]
+    assert h4[HQFBP_CBOR_KEYS["Content-Encoding"]] == [1, -1, -1]
+
 
 def test_crc_helpers():
     from hqfbp import crc16_ccitt, crc32, verify_and_strip_crc
+
     data = b"hello"
-    
+
     # Test CRC16
     c16 = crc16_ccitt(data)
     assert len(c16) == 2
     assert verify_and_strip_crc(data + c16, "crc16") == (data, True)
     with pytest.raises(ValueError, match="verification failed"):
         verify_and_strip_crc(data + b"\x00\x00", "crc16")
-        
+
     # Test CRC32
     c32 = crc32(data)
     assert len(c32) == 4
