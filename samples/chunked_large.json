@@ -1,0 +1,9 @@
+{
+  "name": "chunked_large",
+  "filepath": "test_payload.bin",
+  "src_callsign": "TEST-GEN",
+  "encodings": "gzip,h,crc32",
+  "announcement_encodings": "",
+  "max_payload_size": 256,
+  "output": "chunked_large.kiss"
+}

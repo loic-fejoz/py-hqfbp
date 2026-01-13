@@ -1,0 +1,9 @@
+{
+  "name": "complex",
+  "filepath": "test_payload.bin",
+  "src_callsign": "TEST-GEN",
+  "encodings": "gzip,h,rs(255,223),crc32",
+  "announcement_encodings": "h,crc32",
+  "max_payload_size": 223,
+  "output": "complex.kiss"
+}

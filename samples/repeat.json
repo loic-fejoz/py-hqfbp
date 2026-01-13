@@ -1,0 +1,9 @@
+{
+  "name": "repeat",
+  "filepath": "test_payload.bin",
+  "src_callsign": "TEST-GEN",
+  "encodings": "h,repeat(3),crc16",
+  "announcement_encodings": "h,crc16",
+  "max_payload_size": 512,
+  "output": "repeat.kiss"
+}

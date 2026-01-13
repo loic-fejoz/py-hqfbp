@@ -59,3 +59,13 @@ while True:
         src = ev.header.get(HQFBP_CBOR_KEYS["Src-Callsign"])
         print(f"Received from {src}: {ev.payload.decode()}")
 ```
+
+## Generating Samples for Cross-Testing
+
+To generate a set of KISS files and their corresponding JSON metadata for stress-testing other implementations, run:
+
+```bash
+uv run python scripts/generate_samples.py
+```
+
+This will create a `samples/` directory containing several test cases with various encoding combinations.

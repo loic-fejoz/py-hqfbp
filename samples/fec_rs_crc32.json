@@ -1,0 +1,9 @@
+{
+  "name": "fec_rs_crc32",
+  "filepath": "test_payload.bin",
+  "src_callsign": "TEST-GEN",
+  "encodings": "h,rs(255,223),crc32",
+  "announcement_encodings": "h,crc32,repeat(3)",
+  "max_payload_size": 223,
+  "output": "fec_rs_crc32.kiss"
+}

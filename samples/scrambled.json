@@ -1,0 +1,9 @@
+{
+  "name": "scrambled",
+  "filepath": "test_payload.bin",
+  "src_callsign": "TEST-GEN",
+  "encodings": "scr(0x1234),h,crc32",
+  "announcement_encodings": "",
+  "max_payload_size": 1024,
+  "output": "scrambled.kiss"
+}

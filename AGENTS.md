@@ -5,7 +5,7 @@ To provide the **official reference implementation** of the **Hamradio Quick Fil
 
 ## Critical Commands
 - **Install (Dev):** `uv sync`
-- **Test:** `pytest` (Run this ALWAYS before submitting changes)
+- **Test:** `uv run pytest` (Run this ALWAYS before submitting changes)
 - **Lint:** `ruff check` (Run `ruff format` to fix)
 - **Simulate:** `python -m hqfbp.simulate`
 

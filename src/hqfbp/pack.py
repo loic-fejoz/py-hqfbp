@@ -147,8 +147,9 @@ def main():
             with open(args.config, "w") as f:
                 f.write(tomlkit.dumps(doc))
 
-    except Exception as e:
-        print(f"Error packing frames: {e}", file=sys.stderr)
+    except Exception:
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":

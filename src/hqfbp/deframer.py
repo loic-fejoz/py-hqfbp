@@ -110,8 +110,11 @@ class Deframer:
                     src_callsign, msg_id = header.get(HQFBP_CBOR_KEYS["Src-Callsign"]), header.get(HQFBP_CBOR_KEYS["Message-Id"])
                     if msg_id is not None:
                         decoded_pdu_level = True
-                        self._not_yet_decoded_pdus = []
-                        break
+                        break # Still break the list of announcements if we found one?
+                        # Wait, if we matched ONE announcement, we might still want to match others?
+                        # In HQFBP, one PDU usually belongs to one message.
+                        # But in Phase 2, we might have reassembled ONE chunk. 
+                        # We should probably keep other PDUs for OTHER chunks.
                 except Exception: continue
 
         if header is None or msg_id is None:

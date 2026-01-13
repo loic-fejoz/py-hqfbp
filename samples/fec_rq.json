@@ -1,0 +1,9 @@
+{
+  "name": "fec_rq",
+  "filepath": "test_payload.bin",
+  "src_callsign": "TEST-GEN",
+  "encodings": "h,rq(dlen,512,0)",
+  "announcement_encodings": "h,crc32,repeat(3)",
+  "max_payload_size": 1024,
+  "output": "fec_rq.kiss"
+}
