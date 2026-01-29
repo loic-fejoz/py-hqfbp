@@ -73,6 +73,13 @@ ENCODING_REGISTRY = {
     4: "lzma",
     5: "crc16",
     6: "crc32",
+    7: "rs",
+    8: "rq",
+    9: "conv",
+    10: "scr",
+    11: "chunk",
+    12: "repeat",
+    15: "golay",
 }
 
 # Inverse mapping for encoding lookup
@@ -80,9 +87,13 @@ _REV_ENCODING_REGISTRY = {v: k for k, v in ENCODING_REGISTRY.items()}
 
 RS_RE = re.compile(r"rs\((\d+),\s*(\d+)\)")
 RQ_RE = re.compile(r"rq\((\d+),\s*(\d+),\s*(\d+)\)")
-LT_RE = re.compile(r"lt\((\d+|dlen),\s*(\d+),\s*(\d+)\)")
+RQ_DYN_RE = re.compile(r"rq\(dlen,\s*(\d+),\s*(\d+)\)")
+RQ_DYN_PERC_RE = re.compile(r"rq\(dlen,\s*(\d+),\s*(\d+)%\)")
+LT_RE = re.compile(r"lt\((\d+),\s*(\d+),\s*(\d+)\)")
+LT_DYN_RE = re.compile(r"lt\(dlen,\s*(\d+),\s*(\d+)\)")
 CONV_RE = re.compile(r"conv\((\d+),\s*(\d+/\d+)\)")
-SCR_RE = re.compile(r"scr\((0x[0-9a-fA-F]+|\d+)\)")
+SCR_RE = re.compile(r"scr\((0x[0-9a-fA-F]+|\d+)(?:\s*,\s*(0x[0-9a-fA-F]+|\d+))?\)")
+GOLAY_RE = re.compile(r"golay(?:\((\d+),\s*(\d+)\))?")
 CHUNK_RE = re.compile(r"chunk\((\d+)\)")
 REPEAT_RE = re.compile(r"repeat\((\d+)\)")
 
@@ -99,7 +110,12 @@ def rs_encode(data: bytes, n: int, k: int) -> bytes:
     return bytes(encoded)
 
 
-def rs_decode(data: bytes, n: int, k: int) -> Tuple[bytes, int]:
+def rs_decode(
+    data: Union[bytes, List[bytes]], n: int, k: int
+) -> Tuple[bytes, int]:
+    if isinstance(data, list):
+        data = b"".join(data)
+
     """
     Decode data using Reed-Solomon(n, k). Data should be multiple of n bytes.
     Returns (decoded_data, total_errors_corrected).
@@ -275,11 +291,17 @@ def conv_encode(data: bytes, k: int = 7, rate: str = "1/2") -> bytes:
     return bytes(res)
 
 
-def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> Tuple[bytes, int]:
+def conv_decode(
+    data: Union[bytes, List[bytes]], k: int = 7, rate: str = "1/2"
+) -> Tuple[bytes, int]:
+    if isinstance(data, list):
+        data = b"".join(data)
+
     """
     Viterbi decoding for conv(7, 1/2) with NASA polynomials.
     Returns (decoded_data, min_path_metric).
     Lower path metric means higher quality (fewer bit flips corrected).
+    Optimized to O(N) using backtracking.
     """
     if k != 7 or rate != "1/2":
         raise ValueError("Only conv(7, 1/2) is currently supported")
@@ -308,7 +330,13 @@ def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> Tuple[bytes, int]
     # Viterbi state
     metrics = [float("inf")] * num_states
     metrics[0] = 0
-    paths = [bytearray() for _ in range(num_states)]
+    
+    # predecessor_states[step][state] = (prev_state << 1) | bit
+    num_steps = len(data) * 4 # 8 bits per byte / 2 bits per step
+    if num_steps == 0:
+        return b"", 0
+        
+    predecessor_states = [None] * num_steps
 
     # Extract bits from data
     input_bits = []
@@ -318,29 +346,31 @@ def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> Tuple[bytes, int]
 
     # Process pairs of bits (Rate 1/2)
     for i in range(0, len(input_bits) - 1, 2):
+        step = i // 2
         r1 = input_bits[i]
         r2 = input_bits[i + 1]
 
         new_metrics = [float("inf")] * num_states
-        new_paths = [None] * num_states
+        predecessors = [0] * num_states
 
         for s in range(num_states):
-            if metrics[s] == float("inf"):
+            curr_metric = metrics[s]
+            if curr_metric == float("inf"):
                 continue
 
             for bit in [0, 1]:
                 next_s, p1, p2 = transitions[s][bit]
                 dist = (r1 ^ p1) + (r2 ^ p2)
-                new_dist = metrics[s] + dist
+                new_dist = curr_metric + dist
 
                 if new_dist < new_metrics[next_s]:
                     new_metrics[next_s] = new_dist
-                    new_paths[next_s] = paths[s] + bytearray([bit])
+                    predecessors[next_s] = (s << 1) | bit
 
         metrics = new_metrics
-        paths = new_paths
+        predecessor_states[step] = predecessors
 
-    # Pick the best path (should end at state 0 because of the flush)
+    # Pick the best ending state
     best_state = 0
     min_m = metrics[0]
     for s in range(num_states):
@@ -348,9 +378,21 @@ def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> Tuple[bytes, int]
             min_m = metrics[s]
             best_state = s
 
-    decoded_bits = paths[best_state]
+    # Backtrack
+    decoded_bits = [0] * num_steps
+    curr_s = best_state
+    for step in range(num_steps - 1, -1, -1):
+        prev_info = predecessor_states[step][curr_s]
+        prev_s = prev_info >> 1
+        bit = prev_info & 1
+        decoded_bits[step] = bit
+        curr_s = prev_s
+
     # Remove the K-1 flush bits
-    decoded_bits = decoded_bits[: -(k - 1)]
+    if len(decoded_bits) >= (k - 1):
+        decoded_bits = decoded_bits[: -(k - 1)]
+    else:
+        decoded_bits = []
 
     # Convert back to bytes
     res = bytearray()
@@ -358,14 +400,127 @@ def conv_decode(data: bytes, k: int = 7, rate: str = "1/2") -> Tuple[bytes, int]
         byte_val = 0
         chunk = decoded_bits[i : i + 8]
         if len(chunk) < 8:
-            break  # Should be multiple of 8
+            break
         for idx, b in enumerate(chunk):
             byte_val |= b << (7 - idx)
         res.append(byte_val)
     return bytes(res), int(min_m)
 
 
-def scr_xor(data: bytes, poly_mask: int) -> bytes:
+# Golay(24,12) Implementation
+GOLAY_B = [
+    0x8ED, 0x1DB, 0x3B6, 0x76C, 0xED8, 0xDB5, 0xB6B, 0x6D7, 0xDAE, 0xB5D, 0x6BA, 0xD74,
+]
+
+def golay_encode_codeword(data: int) -> int:
+    parity = 0
+    for i in range(12):
+        if (data >> (11 - i)) & 1:
+            parity ^= GOLAY_B[i]
+    return (data << 12) | parity
+
+def golay_weight12(n: int) -> int:
+    return bin(n & 0xFFF).count('1')
+
+def golay_decode_codeword(received: int) -> Tuple[int, int]:
+    data = (received >> 12) & 0xFFF
+    parity = received & 0xFFF
+    
+    expected_parity = 0
+    for i in range(12):
+        if (data >> (11 - i)) & 1:
+            expected_parity ^= GOLAY_B[i]
+    
+    s = parity ^ expected_parity
+    if s == 0:
+        return data, 0
+        
+    if golay_weight12(s) <= 3:
+        corrected = received ^ s
+        return (corrected >> 12) & 0xFFF, golay_weight12(s)
+        
+    for i in range(12):
+        si = s ^ GOLAY_B[i]
+        if golay_weight12(si) <= 2:
+            error_pattern = si | (1 << (23 - i))
+            corrected = received ^ error_pattern
+            return (corrected >> 12) & 0xFFF, golay_weight12(si) + 1
+            
+    # Try s * B
+    s_prime = 0
+    for i in range(12):
+        row_sum = 0
+        for j in range(12):
+            if (s & (1 << (11 - j))) and (GOLAY_B[j] & (1 << (11 - i))):
+                row_sum ^= 1
+        if row_sum:
+            s_prime |= (1 << (11 - i))
+            
+    if golay_weight12(s_prime) <= 3:
+        error_pattern = s_prime << 12
+        corrected = received ^ error_pattern
+        return (corrected >> 12) & 0xFFF, golay_weight12(s_prime)
+        
+    for i in range(12):
+        s_prime_i = s_prime ^ GOLAY_B[i]
+        if golay_weight12(s_prime_i) <= 2:
+            error_pattern = (s_prime_i << 12) | (1 << (11 - i))
+            corrected = received ^ error_pattern
+            return (corrected >> 12) & 0xFFF, golay_weight12(s_prime_i) + 1
+            
+    return data, 0
+
+def golay_encode(data: bytes) -> bytes:
+    encoded = bytearray()
+    for i in range(0, len(data), 3):
+        b1 = data[i]
+        b2 = data[i+1] if i + 1 < len(data) else 0
+        b3 = data[i+2] if i + 2 < len(data) else 0
+        
+        w1 = (b1 << 4) | (b2 >> 4)
+        w2 = ((b2 & 0x0F) << 8) | b3
+        
+        c1 = golay_encode_codeword(w1)
+        c2 = golay_encode_codeword(w2)
+        
+        encoded.extend(struct.pack(">I", c1)[1:])
+        encoded.extend(struct.pack(">I", c2)[1:])
+    return bytes(encoded)
+
+def golay_decode(data: Union[bytes, List[bytes]]) -> Tuple[bytes, int]:
+    if isinstance(data, list):
+        data = b"".join(data)
+
+    if len(data) % 6 != 0:
+        raise ValueError("Invalid Golay data length: must be multiple of 6 bytes")
+        
+    decoded = bytearray()
+    total_corrected = 0
+    for i in range(0, len(data), 6):
+        c1 = struct.unpack(">I", b"\x00" + data[i:i+3])[0]
+        c2 = struct.unpack(">I", b"\x00" + data[i+3:i+6])[0]
+        
+        w1, n1 = golay_decode_codeword(c1)
+        w2, n2 = golay_decode_codeword(c2)
+        
+        total_corrected += n1 + n2
+        
+        b1 = (w1 >> 4) & 0xFF
+        b2 = ((w1 & 0xF) << 4) | ((w2 >> 8) & 0xF)
+        b3 = w2 & 0xFF
+        
+        decoded.append(b1)
+        decoded.append(b2)
+        decoded.append(b3)
+    return bytes(decoded), total_corrected
+
+
+def scr_xor(
+    data: Union[bytes, List[bytes]], poly_mask: int, seed: Optional[int] = None
+) -> bytes:
+    if isinstance(data, list):
+        data = b"".join(data)
+
     """
     Additive scrambler using an LFSR.
     Since it's XOR-based, scrambling and descrambling are the same operation.
@@ -373,6 +528,7 @@ def scr_xor(data: bytes, poly_mask: int) -> bytes:
     Args:
         data: Input bytes.
         poly_mask: LFSR feedback polynomial.
+        seed: Optional LFSR initial state. Defaults to all ones if None.
 
     Returns:
         bytes: Scrambled/descrambled result.
@@ -385,7 +541,7 @@ def scr_xor(data: bytes, poly_mask: int) -> bytes:
     mask = (1 << width) - 1
 
     # Use a fixed seed for repeatability
-    state = mask
+    state = seed if seed is not None else mask
 
     res = bytearray()
     for b in data:
@@ -496,11 +652,6 @@ def unpack(data: bytes) -> Tuple[Dict[int, Any], bytes]:
     fp = io.BytesIO(data)
     header = cbor2.load(fp)
     payload = fp.read()
-
-    # Use Payload-Size (key 12) to trim padding added by FEC if present
-    payload_size = header.get(12)
-    if payload_size is not None:
-        payload = payload[:payload_size]
 
     return header, payload
 

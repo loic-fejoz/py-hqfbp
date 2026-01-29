@@ -1,6 +1,15 @@
-import gzip
-import lzma
-import brotli
+try:
+    import gzip
+except ImportError:
+    gzip = None
+try:
+    import lzma
+except ImportError:
+    lzma = None
+try:
+    import brotli
+except ImportError:
+    brotli = None
 from typing import Optional, List, Union, Generator, Tuple
 from hqfbp import (
     pack,
@@ -10,13 +19,18 @@ from hqfbp import (
     RS_RE,
     rs_encode,
     RQ_RE,
+    RQ_DYN_RE,
+    RQ_DYN_PERC_RE,
     rq_encode,
     LT_RE,
+    LT_DYN_RE,
     lt_encode,
     CONV_RE,
     conv_encode,
     SCR_RE,
     scr_xor,
+    GOLAY_RE,
+    golay_encode,
     CHUNK_RE,
     REPEAT_RE,
     _REV_ENCODING_REGISTRY,
@@ -96,24 +110,33 @@ class PDUGenerator:
                 if m:
                     n, k = map(int, m.groups())
                     data = rs_encode(data, n, k)
-                elif RQ_RE.match(enc):
-                    m = RQ_RE.match(enc)
+                elif m := RQ_RE.match(enc):
                     rq_len, mtu, repair_count = map(int, m.groups())
-                    # RaptorQ is special: it returns a LIST of chunks
                     return rq_encode(data, rq_len, mtu, repair_count)
-                elif LT_RE.match(enc):
-                    m = LT_RE.match(enc)
-                    lt_len, mtu, repair_count = m.groups()
-                    return lt_encode(data, int(lt_len), int(mtu), int(repair_count))
-                elif CONV_RE.match(enc):
-                    m = CONV_RE.match(enc)
+                elif m := RQ_DYN_RE.match(enc):
+                    mtu, repair_count = map(int, m.groups())
+                    return rq_encode(data, len(data), mtu, repair_count)
+                elif m := RQ_DYN_PERC_RE.match(enc):
+                    mtu, percent = map(int, m.groups())
+                    rq_len = (len(data) * percent) // 100
+                    return rq_encode(data, rq_len, mtu, 0) # Repair count? usually handled by total chunks
+                elif m := LT_RE.match(enc):
+                    lt_len, mtu, repair_count = map(int, m.groups())
+                    return lt_encode(data, lt_len, mtu, repair_count)
+                elif m := LT_DYN_RE.match(enc):
+                    mtu, repair_count = map(int, m.groups())
+                    return lt_encode(data, len(data), mtu, repair_count)
+                elif m := CONV_RE.match(enc):
                     k_val, rate = m.groups()
                     data = conv_encode(data, int(k_val), rate)
-                elif SCR_RE.match(enc):
-                    m = SCR_RE.match(enc)
+                elif m := SCR_RE.match(enc):
                     poly_str = m.group(1)
                     poly = int(poly_str, 0)
-                    data = scr_xor(data, poly)
+                    seed_str = m.group(2)
+                    seed = int(seed_str, 0) if seed_str else None
+                    data = scr_xor(data, poly, seed)
+                elif m := GOLAY_RE.match(enc):
+                    data = golay_encode(data)
         return data
 
     def _parse_encodings(
@@ -189,7 +212,7 @@ class PDUGenerator:
                         encs.insert(i, f"chunk({rs_m.group(2)})")
                         has_chunk = True
                         break
-                    rq_m = RQ_RE.match(e)
+                    rq_m = RQ_RE.match(e) or RQ_DYN_RE.match(e) or RQ_DYN_PERC_RE.match(e)
                     if rq_m:
                         # RaptorQ handles its own segmentation, no chunk() needed
                         has_chunk = (
@@ -306,15 +329,21 @@ class PDUGenerator:
                 for c in current_chunks:
                     # Update RaptorQ/LT dynamic length if needed
                     if isinstance(enc, str):
-                        if enc.startswith("rq(dlen,"):
-                            enc = enc.replace(
-                                "rq(dlen,", "rq(" + str(int(len(c))) + ","
-                            )
+                        if RQ_DYN_RE.match(enc):
+                            m = RQ_DYN_RE.match(enc)
+                            mtu, rep = m.groups()
+                            enc = f"rq({len(c)},{mtu},{rep})"
                             full_encs[enc_idx] = enc
-                        elif enc.startswith("lt(dlen,"):
-                            enc = enc.replace(
-                                "lt(dlen,", "lt(" + str(int(len(c))) + ","
-                            )
+                        elif RQ_DYN_PERC_RE.match(enc):
+                            m = RQ_DYN_PERC_RE.match(enc)
+                            mtu, perc = m.groups()
+                            rq_len = (len(c) * int(perc)) // 100
+                            enc = f"rq({rq_len},{mtu},0)"
+                            full_encs[enc_idx] = enc
+                        elif LT_DYN_RE.match(enc):
+                            m = LT_DYN_RE.match(enc)
+                            mtu, rep = m.groups()
+                            enc = f"lt({len(c)},{mtu},{rep})"
                             full_encs[enc_idx] = enc
 
                     chunks = self._apply_encodings(c, [enc])

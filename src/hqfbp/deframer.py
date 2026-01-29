@@ -1,6 +1,15 @@
-import gzip
-import lzma
-import brotli
+try:
+    import gzip
+except ImportError:
+    gzip = None
+try:
+    import lzma
+except ImportError:
+    lzma = None
+try:
+    import brotli
+except ImportError:
+    brotli = None
 import cbor2
 from collections import deque
 from typing import Dict, Any, Tuple, Optional, List, Union, Deque
@@ -14,13 +23,18 @@ from hqfbp import (
     RS_RE,
     rs_decode,
     RQ_RE,
+    RQ_DYN_RE,
+    RQ_DYN_PERC_RE,
     rq_decode,
     LT_RE,
+    LT_DYN_RE,
     lt_decode,
     CONV_RE,
     conv_decode,
     SCR_RE,
     scr_xor,
+    GOLAY_RE,
+    golay_decode,
     CHUNK_RE,
     REPEAT_RE,
 )
@@ -81,12 +95,21 @@ class Deframer:
                 CHUNK_RE.match(e)
                 or REPEAT_RE.match(e)
                 or RQ_RE.match(e)
+                or RQ_DYN_RE.match(e)
+                or RQ_DYN_PERC_RE.match(e)
                 or LT_RE.match(e)
+                or LT_DYN_RE.match(e)
+                or RS_RE.match(e)
+                or GOLAY_RE.match(e)
             ):
                 lsi = i
         to_apply = pre[lsi + 1 :] if lsi != -1 else pre
         if to_apply:
-            return self._apply_decoding_list(payload, to_apply, True)
+            expected_size = header.get(HQFBP_CBOR_KEYS["Payload-Size"])
+            data, q = self._apply_decoding_list(payload, to_apply, True, expected_size)
+            if expected_size is not None:
+                data = data[:expected_size]
+            return data, q
         return payload, 0
 
     def receive_bytes(self, data: bytes):
@@ -99,25 +122,34 @@ class Deframer:
             h_peek, p_peek = unpack(data)
             src_c = h_peek.get(HQFBP_CBOR_KEYS["Src-Callsign"])
             m_id = h_peek.get(HQFBP_CBOR_KEYS["Message-Id"])
-
-            ann_encs = self._announcements.get((src_c, m_id))
-            if ann_encs:
-                if not self._is_fragmented(h_peek, len(p_peek)):
-                    stripped, q = self._strip_post_boundary_encodings(data, ann_encs)
-                    header, payload = unpack(stripped)
-                    payload, q_gain = self._apply_pdu_level_decodings(header, payload)
-                    pdu_quality = q + q_gain
-                    src_callsign, msg_id = (
-                        header.get(HQFBP_CBOR_KEYS["Src-Callsign"]),
-                        header.get(HQFBP_CBOR_KEYS["Message-Id"]),
-                    )
-                    msg_id = h_peek.get(HQFBP_CBOR_KEYS["Original-Message-Id"], msg_id)
-                    decoded_pdu_level = True
-            elif not self._is_fragmented(h_peek, len(p_peek)):
-                header, payload = h_peek, p_peek
+            orig_id = h_peek.get(HQFBP_CBOR_KEYS["Original-Message-Id"], m_id)
+            
+            # 1a. Determine the encoding list to use
+            ce_list = self._announcements.get((src_c, orig_id))
+            if ce_list is None:
+                ce_list = h_peek.get(HQFBP_CBOR_KEYS["Content-Encoding"])
+            
+            pre, post, has_h = self._split_encodings(ce_list)
+            
+            h_final, p_final = h_peek, p_peek
+            q_pdu = 0
+            
+            if has_h and post:
+                # Try to strip post-boundary encodings from the whole PDU
+                try:
+                    stripped, q_pdu = self._strip_post_boundary_encodings(data, ce_list)
+                    h_final, p_final = unpack(stripped)
+                except Exception:
+                    pass
+            
+            if not self._is_fragmented(h_final, len(p_final)):
+                header, payload = h_final, p_final
                 payload, q_gain = self._apply_pdu_level_decodings(header, payload)
-                pdu_quality = q_gain
-                src_callsign, msg_id = src_c, m_id
+                pdu_quality = q_pdu + q_gain
+                src_callsign, msg_id = (
+                    header.get(HQFBP_CBOR_KEYS["Src-Callsign"]),
+                    header.get(HQFBP_CBOR_KEYS["Message-Id"]),
+                )
                 decoded_pdu_level = True
         except Exception:
             pass
@@ -149,7 +181,8 @@ class Deframer:
                     continue
 
         if header is None or msg_id is None:
-            self._not_yet_decoded_pdus.append(data)
+            if data not in self._not_yet_decoded_pdus:
+                self._not_yet_decoded_pdus.append(data)
             return
 
         cont_type = header.get(HQFBP_CBOR_KEYS["Content-Type"])
@@ -204,6 +237,13 @@ class Deframer:
     def next_event(self) -> Optional[Union[PDUEvent, MessageEvent]]:
         return self._events.popleft() if self._events else None
 
+    def rescan_pending(self):
+        """Try to process all PDUs that were stored because of missing announcements."""
+        to_process = self._not_yet_decoded_pdus
+        self._not_yet_decoded_pdus = []
+        for data in to_process:
+            self.receive_bytes(data)
+
     def _handle_announcement(self, src_callsign: Optional[str], payload: bytes):
         try:
             ann_data = cbor2.loads(payload)
@@ -215,6 +255,7 @@ class Deframer:
                 self._announcements[(src_callsign, tid)] = (
                     tce if isinstance(tce, list) else [tce]
                 )
+                self.rescan_pending()
         except Exception:
             pass
 
@@ -223,73 +264,134 @@ class Deframer:
         data: Union[bytes, List[bytes]],
         encodings: List[Union[int, str]],
         pre_boundary: bool,
+        expected_size: Optional[int] = None,
     ) -> Tuple[bytes, int]:
         quality = 0
         for enc in reversed(encodings):
-            if enc in (1, "gzip", 3, "br", 4, "lzma", 5, 6, "crc16", "crc32"):
-                if isinstance(data, list):
-                    data = b"".join(data)
-                if enc in (1, "gzip"):
-                    data = gzip.decompress(data)
-                elif enc in (3, "br"):
-                    data = brotli.decompress(data)
-                elif enc in (4, "lzma"):
-                    data = lzma.decompress(data)
-                else:
-                    data, ok = verify_and_strip_crc(data, enc)
-                    if ok:
-                        quality += 1000
-            elif isinstance(enc, str):
-                m_rep = REPEAT_RE.match(enc)
-                m_rs = RS_RE.match(enc)
-                m_rq = RQ_RE.match(enc)
-                m_lt = LT_RE.match(enc)
-                m_conv = CONV_RE.match(enc)
-                m_scr = SCR_RE.match(enc)
-                m_chunk = CHUNK_RE.match(enc)
-                if m_rep:
-                    count = int(m_rep.group(1))
-                    if isinstance(data, list):
-                        data = data[::count]
-                    else:
-                        block_len = len(data) // count
-                        if block_len > 0:
-                            data = data[:block_len]
-                elif m_chunk:
-                    if isinstance(data, list):
-                        data = b"".join(data)
-                elif m_rs:
-                    if isinstance(data, list):
-                        data = b"".join(data)
-                    n, k = map(int, m_rs.groups())
-                    data, errs = rs_decode(data, n, k)
-                    quality += (((n - k) // 2) * (len(data) // k)) - errs
-                elif m_rq:
+            # Combiners (they handle List[bytes] themselves)
+            m_rq = RQ_RE.match(enc) if isinstance(enc, str) else None
+            m_rq_dyn = RQ_DYN_RE.match(enc) if isinstance(enc, str) else None
+            m_rq_dp = RQ_DYN_PERC_RE.match(enc) if isinstance(enc, str) else None
+            m_lt = LT_RE.match(enc) if isinstance(enc, str) else None
+            m_lt_dyn = LT_DYN_RE.match(enc) if isinstance(enc, str) else None
+            m_chunk = CHUNK_RE.match(enc) if isinstance(enc, str) else None
+            m_rep = REPEAT_RE.match(enc) if isinstance(enc, str) else None
+
+            if m_rq or m_rq_dyn or m_rq_dp or m_lt or m_lt_dyn or m_chunk or m_rep:
+                # These are combiners, they expect List[bytes] or will handle bytes themselves
+                if m_rq:
                     rq_len, mtu, _ = map(int, m_rq.groups())
                     if not isinstance(data, list):
-                        data = [
-                            data[i : i + mtu + 4] for i in range(0, len(data), mtu + 4)
-                        ]
+                        data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
+                    data = rq_decode(data, rq_len, mtu)
+                    quality += 10
+                elif m_rq_dyn:
+                    mtu, _ = map(int, m_rq_dyn.groups())
+                    if not isinstance(data, list):
+                        data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
+                    rq_len = expected_size if expected_size is not None else (len(data)*mtu)
+                    data = rq_decode(data, rq_len, mtu)
+                    quality += 10
+                elif m_rq_dp:
+                    mtu, percent = map(int, m_rq_dp.groups())
+                    if not isinstance(data, list):
+                        data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
+                    rq_len = expected_size if expected_size is not None else (len(data)*mtu*100//(100+percent))
                     data = rq_decode(data, rq_len, mtu)
                     quality += 10
                 elif m_lt:
                     lt_len, mtu, _ = map(int, m_lt.groups())
                     if not isinstance(data, list):
-                        data = [
-                            data[i : i + mtu + 4] for i in range(0, len(data), mtu + 4)
-                        ]
+                        data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
                     data = lt_decode(data, lt_len, mtu)
                     quality += 10
-                elif m_conv:
+                elif m_lt_dyn:
+                    mtu, _ = map(int, m_lt_dyn.groups())
+                    if not isinstance(data, list):
+                        data = [data[i:i+mtu+4] for i in range(0, len(data), mtu+4)]
+                    lt_len = expected_size if expected_size is not None else (len(data)*mtu)
+                    data = lt_decode(data, lt_len, mtu)
+                    quality += 10
+                elif m_chunk:
                     if isinstance(data, list):
                         data = b"".join(data)
-                    k_v, r = m_conv.groups()
-                    data, met = conv_decode(data, int(k_v), r)
-                    quality += len(data) * 8 - met
-                elif m_scr:
+                elif m_rep:
+                    count = int(m_rep.group(1))
                     if isinstance(data, list):
+                        data = data[::count]
+            else:
+                # These are PDU-level or stream-level. 
+                # If data is a list, map over it.
+                if isinstance(data, list):
+                    if enc in (1, "gzip", 2, "deflate", 3, "br", 4, "lzma"):
+                        # Compression usually applies to the joined stream
                         data = b"".join(data)
-                    data = scr_xor(data, int(m_scr.group(1), 0))
+                        if enc in (1, "gzip"): data = gzip.decompress(data)
+                        elif enc in (3, "br"): data = brotli.decompress(data)
+                        elif enc in (4, "lzma"): data = lzma.decompress(data)
+                    else:
+                        # Map over each segment (RS, CRC, Scrambler, Conv, Golay)
+                        next_data = []
+                        for segment in data:
+                            res, q = self._apply_decoding_list(segment, [enc], pre_boundary, expected_size)
+                            next_data.append(res)
+                            quality += q
+                        data = next_data
+                else:
+                    # Single bytes case (standard)
+                    if enc in (1, "gzip", 2, "deflate", 3, "br", 4, "lzma", 5, 6, "crc16", "crc32"):
+                        if enc in (1, "gzip"): data = gzip.decompress(data)
+                        elif enc in (3, "br"): data = brotli.decompress(data)
+                        elif enc in (4, "lzma"): data = lzma.decompress(data)
+                        else:
+                            # CRC logic (including sliding window)
+                            try:
+                                data, ok = verify_and_strip_crc(data, enc)
+                                if ok: quality += 1000
+                            except ValueError:
+                                # ... sliding window logic ...
+                                from hqfbp import crc16_ccitt, crc32 as hq_crc32
+                                crc_size = 4 if enc in ("crc32", 6) else 2
+                                if len(data) > crc_size:
+                                    test_len = len(data) - 1
+                                    min_len = max(crc_size, len(data) - 256)
+                                    found_vl = None
+                                    while test_len >= min_len:
+                                        payload = data[:test_len-crc_size]
+                                        expected = data[test_len-crc_size:test_len]
+                                        actual = hq_crc32(payload) if crc_size == 4 else crc16_ccitt(payload)
+                                        if actual == expected:
+                                            found_vl = test_len - crc_size
+                                            break
+                                        test_len -= 1
+                                    if found_vl is not None:
+                                        data = data[:found_vl]
+                                        quality += 1000
+                                    else: raise ValueError("CRC mismatch")
+                                else: raise ValueError("CRC mismatch")
+                    else:
+                        # Other string-based encodings (RS, Conv, Scrambler, Golay)
+                        m_rs = RS_RE.match(enc) if isinstance(enc, str) else None
+                        m_conv = CONV_RE.match(enc) if isinstance(enc, str) else None
+                        m_scr = SCR_RE.match(enc) if isinstance(enc, str) else None
+                        m_golay = GOLAY_RE.match(enc) if isinstance(enc, str) else None
+                        
+                        if m_rs:
+                            n, k = map(int, m_rs.groups())
+                            data, errs = rs_decode(data, n, k)
+                            quality += (n - k) // 2 - errs
+                        elif m_conv:
+                            k_v, r = m_conv.groups()
+                            data, met = conv_decode(data, int(k_v), r)
+                            quality += len(data)*8 - met
+                        elif m_scr:
+                            groups = m_scr.groups()
+                            poly = int(groups[0], 0)
+                            seed = int(groups[1], 0) if groups[1] else None
+                            data = scr_xor(data, poly, seed)
+                        elif m_golay:
+                            data, errs = golay_decode(data)
+                            quality += errs
         if isinstance(data, list):
             data = b"".join(data)
         return data, quality
@@ -320,13 +422,19 @@ class Deframer:
                     CHUNK_RE.match(e)
                     or REPEAT_RE.match(e)
                     or RQ_RE.match(e)
+                    or RQ_DYN_RE.match(e)
+                    or RQ_DYN_PERC_RE.match(e)
                     or LT_RE.match(e)
+                    or LT_DYN_RE.match(e)
+                    or RS_RE.match(e)
+                    or GOLAY_RE.match(e)
                 ):
                     lsi = i
             msg_encs = pre[: lsi + 1] if lsi != -1 else []
             if msg_encs:
+                expected_size = merged_header.get(HQFBP_CBOR_KEYS["File-Size"])
                 full_payload, _ = self._apply_decoding_list(
-                    full_payload, msg_encs, True
+                    full_payload, msg_encs, True, expected_size
                 )
             if isinstance(full_payload, list):
                 full_payload = b"".join(full_payload)
@@ -358,7 +466,8 @@ class Deframer:
                         h_i.get(HQFBP_CBOR_KEYS["Content-Encoding"])
                     )
                     if pre_i:
-                        p_i, _ = self._apply_decoding_list(p_i, pre_i, True)
+                        ex_sz = h_i.get(HQFBP_CBOR_KEYS["Payload-Size"])
+                        p_i, _ = self._apply_decoding_list(p_i, pre_i, True, ex_sz)
                     merged_header, full_payload = h_i, p_i
             except Exception:
                 pass
@@ -368,7 +477,9 @@ class Deframer:
             self._events.append(MessageEvent(merged_header, full_payload))
             self._sessions.pop(session_key)
             return True
-        except Exception:
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
             return False
 
     def _split_encodings(
@@ -392,8 +503,29 @@ class Deframer:
                     if isinstance(e, str):
                         m = RQ_RE.match(e)
                         if m:
-                            return tuple(map(int, m.groups()))
+                            rq_len, mtu, _ = map(int, m.groups())
+                            return rq_len, mtu, 0
+                        m = RQ_DYN_RE.match(e)
+                        if m:
+                            mtu, _ = map(int, m.groups())
+                            # For early reassembly, we might need a guess for rq_len if not in header
+                            file_size = h.get(HQFBP_CBOR_KEYS["File-Size"])
+                            rq_len = file_size if file_size is not None else 0
+                            return rq_len, mtu, 0
+                        m = RQ_DYN_PERC_RE.match(e)
+                        if m:
+                            mtu, percent = map(int, m.groups())
+                            file_size = h.get(HQFBP_CBOR_KEYS["File-Size"])
+                            rq_len = file_size if file_size is not None else 0
+                            return rq_len, mtu, 0
                         m = LT_RE.match(e)
                         if m:
-                            return tuple(map(int, m.groups()))
+                            lt_len, mtu, _ = map(int, m.groups())
+                            return lt_len, mtu, 0
+                        m = LT_DYN_RE.match(e)
+                        if m:
+                            mtu, _ = map(int, m.groups())
+                            file_size = h.get(HQFBP_CBOR_KEYS["File-Size"])
+                            lt_len = file_size if file_size is not None else 0
+                            return lt_len, mtu, 0
         return None
