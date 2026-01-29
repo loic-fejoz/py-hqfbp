@@ -33,6 +33,9 @@ from hqfbp import (
     golay_encode,
     CHUNK_RE,
     REPEAT_RE,
+    POST_ASM_RE,
+    post_asm_encode,
+    post_asm_decode,
     _REV_ENCODING_REGISTRY,
 )
 
@@ -137,6 +140,15 @@ class PDUGenerator:
                     data = scr_xor(data, poly, seed)
                 elif m := GOLAY_RE.match(enc):
                     data = golay_encode(data)
+                elif m := POST_ASM_RE.match(enc):
+                    sync_word_str = m.group(1)
+                    if sync_word_str.startswith("0x"):
+                        sync_word = bytes.fromhex(sync_word_str[2:])
+                    else:
+                        sync_word = int(sync_word_str).to_bytes(
+                            (int(sync_word_str).bit_length() + 7) // 8, "big"
+                        )
+                    data = post_asm_encode(data, sync_word)
         return data
 
     def _parse_encodings(

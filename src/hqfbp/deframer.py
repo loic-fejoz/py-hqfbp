@@ -37,6 +37,8 @@ from hqfbp import (
     golay_decode,
     CHUNK_RE,
     REPEAT_RE,
+    POST_ASM_RE,
+    post_asm_decode,
 )
 
 
@@ -392,6 +394,15 @@ class Deframer:
                         elif m_golay:
                             data, errs = golay_decode(data)
                             quality += errs
+                        elif m := POST_ASM_RE.match(enc):
+                            sync_word_str = m.group(1)
+                            if sync_word_str.startswith("0x"):
+                                sync_word = bytes.fromhex(sync_word_str[2:])
+                            else:
+                                sync_word = int(sync_word_str).to_bytes(
+                                    (int(sync_word_str).bit_length() + 7) // 8, "big"
+                                )
+                            data = post_asm_decode(data, sync_word)
         if isinstance(data, list):
             data = b"".join(data)
         return data, quality

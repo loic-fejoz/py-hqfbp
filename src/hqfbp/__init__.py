@@ -80,6 +80,7 @@ ENCODING_REGISTRY = {
     11: "chunk",
     12: "repeat",
     15: "golay",
+    56: "post_asm",
 }
 
 # Inverse mapping for encoding lookup
@@ -96,6 +97,7 @@ SCR_RE = re.compile(r"scr\((0x[0-9a-fA-F]+|\d+)(?:\s*,\s*(0x[0-9a-fA-F]+|\d+))?\
 GOLAY_RE = re.compile(r"golay(?:\((\d+),\s*(\d+)\))?")
 CHUNK_RE = re.compile(r"chunk\((\d+)\)")
 REPEAT_RE = re.compile(r"repeat\((\d+)\)")
+POST_ASM_RE = re.compile(r"post_asm\((0x[0-9a-fA-F]+|\d+)\)")
 
 
 def rs_encode(data: bytes, n: int, k: int) -> bytes:
@@ -758,6 +760,18 @@ def human_readable_json(header: Dict[int, Any]) -> Dict[str, Any]:
         readable["Content-Type"] = content_type_val
 
     return readable
+
+
+def post_asm_encode(data: bytes, sync_word: bytes) -> bytes:
+    """Append a sync word (Post-ASM) at the end of the data."""
+    return data + sync_word
+
+
+def post_asm_decode(data: bytes, sync_word: bytes) -> bytes:
+    """Verify and strip a sync word (Post-ASM) from the end of the data."""
+    if not data.endswith(sync_word):
+        raise ValueError(f"Post-ASM sync word mismatch: expected {sync_word.hex()}")
+    return data[: -len(sync_word)]
 
 
 def crc16_ccitt(data: bytes) -> bytes:
