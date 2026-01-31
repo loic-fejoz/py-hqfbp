@@ -328,9 +328,12 @@ class Deframer:
                     if enc in (1, "gzip", 2, "deflate", 3, "br", 4, "lzma"):
                         # Compression usually applies to the joined stream
                         data = b"".join(data)
-                        if enc in (1, "gzip"): data = gzip.decompress(data)
-                        elif enc in (3, "br"): data = brotli.decompress(data)
-                        elif enc in (4, "lzma"): data = lzma.decompress(data)
+                        if enc in (1, "gzip"):
+                            data = gzip.decompress(data)
+                        elif enc in (3, "br"):
+                            data = brotli.decompress(data)
+                        elif enc in (4, "lzma"):
+                            data = lzma.decompress(data)
                     else:
                         # Map over each segment (RS, CRC, Scrambler, Conv, Golay)
                         next_data = []
@@ -342,14 +345,18 @@ class Deframer:
                 else:
                     # Single bytes case (standard)
                     if enc in (1, "gzip", 2, "deflate", 3, "br", 4, "lzma", 5, 6, "crc16", "crc32"):
-                        if enc in (1, "gzip"): data = gzip.decompress(data)
-                        elif enc in (3, "br"): data = brotli.decompress(data)
-                        elif enc in (4, "lzma"): data = lzma.decompress(data)
+                        if enc in (1, "gzip"):
+                            data = gzip.decompress(data)
+                        elif enc in (3, "br"):
+                            data = brotli.decompress(data)
+                        elif enc in (4, "lzma"):
+                            data = lzma.decompress(data)
                         else:
                             # CRC logic (including sliding window)
                             try:
                                 data, ok = verify_and_strip_crc(data, enc)
-                                if ok: quality += 1000
+                                if ok:
+                                    quality += 1000
                             except ValueError:
                                 # ... sliding window logic ...
                                 from hqfbp import crc16_ccitt, crc32 as hq_crc32
@@ -369,8 +376,10 @@ class Deframer:
                                     if found_vl is not None:
                                         data = data[:found_vl]
                                         quality += 1000
-                                    else: raise ValueError("CRC mismatch")
-                                else: raise ValueError("CRC mismatch")
+                                    else:
+                                        raise ValueError("CRC mismatch")
+                                else:
+                                    raise ValueError("CRC mismatch")
                     else:
                         # Other string-based encodings (RS, Conv, Scrambler, Golay)
                         m_rs = RS_RE.match(enc) if isinstance(enc, str) else None

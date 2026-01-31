@@ -1,4 +1,3 @@
-import pytest
 from hqfbp import golay_encode, golay_decode
 
 def test_golay_basic():

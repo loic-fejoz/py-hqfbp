@@ -35,7 +35,6 @@ from hqfbp import (
     REPEAT_RE,
     POST_ASM_RE,
     post_asm_encode,
-    post_asm_decode,
     _REV_ENCODING_REGISTRY,
 )
 

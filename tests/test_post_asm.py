@@ -1,6 +1,6 @@
 from hqfbp.generator import PDUGenerator
 from hqfbp.deframer import Deframer, MessageEvent
-from hqfbp import unpack, HQFBP_CBOR_KEYS
+from hqfbp import HQFBP_CBOR_KEYS
 
 def test_post_asm_roundtrip():
     sync_word = b"\x1A\xCF\xFC\x1D"
@@ -25,7 +25,8 @@ def test_post_asm_roundtrip():
     events = []
     while True:
         e = deframer.next_event()
-        if not e: break
+        if not e:
+            break
         events.append(e)
     
     assert any(isinstance(e, MessageEvent) for e in events)
@@ -56,7 +57,8 @@ def test_post_asm_integer():
     events = []
     while True:
         e = deframer.next_event()
-        if not e: break
+        if not e:
+            break
         events.append(e)
         
     assert any(isinstance(e, MessageEvent) for e in events)
