@@ -1,0 +1,32 @@
+---
+title: HQFBP Introduction
+jupyter: python3
+---
+
+```{python}
+import hqfbp
+```
+
+## Optmized Headers
+
+Conceptually header could be thought as Json but with a compact encoding.
+
+```json
+{  
+  "Message-Id": 42,
+  "Src-Callsign": "FOSM-1",
+  "Content-Type": "text/plain;charset=UTF-8",
+  "File-Size": 8
+}
+```
+
+```{python}
+packed = hqfbp.pack({
+    "Message-Id": 42,
+    "Src-Callsign": "FOSM-1",
+    "Content-Type": "text/plain;charset=UTF-8",
+    "File-Size": 8,
+}, b"")
+print(packed.hex(' '))
+print("#bytes:", len(packed))
+```
